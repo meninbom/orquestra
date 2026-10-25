@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 export async function testSelection({ cdp, run, waitFor }) {
   const frame = () =>
     run(
-      "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))",
+      "Promise.race([new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),new Promise(resolve=>setTimeout(resolve,80))])",
     );
   const selected = () =>
     run(

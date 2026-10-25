@@ -16,6 +16,7 @@ npm run dist:win    # gera instalador Windows x64
 npm test           # testes de projetos, armazenamento, mídia e seleção
 node scripts/test-desktop.mjs  # fluxo Electron com perfil temporário isolado
 node scripts/test-packaged.mjs # fluxo no executável empacotado com perfil isolado
+node scripts/test-customization.mjs # edição, fontes, formas, cores, símbolos e tema
 ```
 
 ## Projetos
@@ -75,6 +76,10 @@ As setas têm fluxo para frente ou reverso, pulso, partículas que percorrem o c
 Cada seção tem transição própria: corte, dissolução, deslizamento, aproximação, desfoque ou virada, com duração ajustável. Em **Projetos**, configure a transição e duração ao abrir outro projeto. As animações respeitam a preferência de movimento reduzido do sistema.
 
 ## Editor
+
+Dê duplo clique no fundo vazio para criar texto e em um texto existente para editá-lo. No painel **Estilo**, o campo **Texto do elemento** também permite revisar o conteúdo; **Fonte** oferece 20 opções agrupadas em sem serifa, com serifa, monoespaçadas, manuscritas e destaque, incluindo Caveat, DM Sans, Arial, Calibri, Segoe UI, Times New Roman, Consolas e Segoe Print. Segure **Shift** ao desenhar ou redimensionar retângulos e elipses para manter lados iguais.
+
+O painel **Estilo** tem cores independentes de borda, texto e preenchimento, transparência e opacidade. Ao selecionar um cartão **Agente**, use **Símbolo do cartão** para escolher um ícone da biblioteca. Na aba de engrenagem **Configurações do board**, em **Aparência do quadro**, escolha tema claro/escuro, cor de destaque e fundo com pontos, grade ou liso. A aparência fica salva neste dispositivo; fontes, preenchimentos e símbolos acompanham o projeto e seus backups.
 
 - Canvas com pan, zoom e enquadramento dos elementos.
 - Seleção múltipla por Shift + clique ou arraste em uma área vazia.

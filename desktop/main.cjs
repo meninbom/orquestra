@@ -45,6 +45,8 @@ else {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // Isolated UI tests use animation frames even when their window is hidden.
+        backgroundThrottling: !testPath,
       },
     });
     Menu.setApplicationMenu(null);

@@ -25,6 +25,8 @@
   --mint: #8fe3b5;
   --active: #1a3529;
   --hover: #192820;
+  --grid-dot: #739b7f28;
+  --grid-line: #739b7f20;
 }
 * {
   box-sizing: border-box;
@@ -99,6 +101,38 @@ svg {
   --mint: #237f55;
   --active: #dceee0;
   --hover: #e5eee5;
+  --grid-dot: #3b68402b;
+  --grid-line: #3b684020;
+}
+.app.accent-blue {
+  --mint: #83b9ed;
+  --active: #1a2b3a;
+  --hover: #1b2934;
+}
+.app.light.accent-blue {
+  --mint: #3676b3;
+  --active: #dbe9f5;
+  --hover: #e7eff7;
+}
+.app.accent-violet {
+  --mint: #c2a1ed;
+  --active: #30243e;
+  --hover: #2a2134;
+}
+.app.light.accent-violet {
+  --mint: #7951a8;
+  --active: #ece3f7;
+  --hover: #f1ebf8;
+}
+.app.accent-coral {
+  --mint: #f09a8b;
+  --active: #3b2522;
+  --hover: #33221f;
+}
+.app.light.accent-coral {
+  --mint: #b95648;
+  --active: #f7e3df;
+  --hover: #faeeeb;
 }
 header {
   height: 66px;
@@ -251,11 +285,16 @@ main {
   overflow: hidden;
   min-width: 0;
   background-color: var(--bg);
-  background-image: radial-gradient(#739b7f28 0.8px, transparent 0.8px);
+  background-image: radial-gradient(var(--grid-dot) 0.8px, transparent 0.8px);
   background-size: 22px 22px;
 }
-.light .canvas {
-  background-image: radial-gradient(#3b68402b 0.8px, transparent 0.8px);
+.canvas.canvas-grid {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+}
+.canvas.canvas-plain {
+  background-image: none;
 }
 .board-svg {
   display: block;
@@ -466,6 +505,10 @@ aside {
   margin-left: auto;
   padding: 0 6px;
 }
+.aside-tabs > .board-settings-tab {
+  padding: 0 7px;
+  min-width: 28px;
+}
 .section-intro {
   display: flex;
   align-items: center;
@@ -474,6 +517,12 @@ aside {
   letter-spacing: 1.3px;
   color: var(--muted);
   margin: 23px 21px 13px;
+}
+.section-edit-hint {
+  margin: -5px 21px 13px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
 }
 .tiny-dot {
   height: 4px;
@@ -592,6 +641,67 @@ aside {
 }
 .style-panel {
   padding: 24px 20px;
+}
+.appearance-options {
+  margin: 0 0 18px;
+}
+.panel-subheading {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  margin: 0 0 17px;
+}
+.appearance-options label {
+  margin: 14px 0 9px;
+}
+.appearance-options select {
+  width: 100%;
+  font-size: 11px;
+  background: var(--bg);
+}
+.accent-swatches button {
+  border: 3px solid var(--surface);
+}
+.color-picker-row {
+  gap: 10px;
+}
+.style-panel input[type="color"] {
+  width: 40px;
+  height: 31px;
+  padding: 3px;
+  border-radius: 5px;
+  background: var(--bg);
+  cursor: pointer;
+}
+.fill-controls {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.fill-clear {
+  flex: 1;
+  height: 32px;
+  justify-content: flex-start;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 10px;
+}
+.fill-clear.active {
+  border-color: var(--mint);
+  color: var(--mint);
+  background: var(--active);
+}
+.fill-swatches {
+  margin-top: 10px;
+}
+.element-text-editor {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  background: var(--bg);
+  font-size: 11px;
+  line-height: 1.5;
 }
 .panel-heading {
   font-size: 11px;
@@ -719,6 +829,47 @@ aside {
   resize: both;
   z-index: 3;
   box-shadow: 0 5px 20px #0005;
+}
+.scene-heading-editable {
+  cursor: text;
+}
+.scene-heading-editable:hover {
+  filter: drop-shadow(0 0 5px #8fe3b555);
+}
+.canvas-scene-edit {
+  position: absolute;
+  z-index: 4;
+  background: var(--surface);
+  border: 1px solid var(--mint);
+  border-radius: 6px;
+  box-shadow: 0 5px 20px #0005;
+}
+.canvas-scene-edit-name {
+  width: min(360px, calc(100% - 24px));
+  height: 30px;
+  padding: 4px 8px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.canvas-scene-edit-description {
+  width: min(720px, calc(100% - 24px));
+  height: 64px;
+  padding: 3px 12px;
+  transform: translateX(-50%);
+  text-align: center;
+  font-family: Caveat, cursive;
+  font-size: 44px;
+  font-weight: 500;
+}
+.canvas-scene-edit-subtitle {
+  width: min(720px, calc(100% - 24px));
+  height: 40px;
+  padding: 2px 12px;
+  transform: translateX(-50%);
+  text-align: center;
+  font-family: Caveat, cursive;
+  font-size: 22px;
 }
 .presenting header {
   display: none;

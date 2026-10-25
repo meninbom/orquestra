@@ -21,6 +21,26 @@ test("legacy board migrates intact into the project library", () => {
   assert.deepEqual(library.projects[0].board, original);
   assert.ok(validLibrary(library));
 });
+test(
+  "section subtitles validate, survive cloning, and remain optional for legacy boards",
+  () => {
+    const library = initialLibrary();
+    const firstScene = library.projects[0].board.scenes[0];
+    firstScene.subtitle = "Subtítulo personalizado";
+    assert.ok(validLibrary(library));
+    assert.equal(
+      cloneBoard(library.projects[0].board).scenes[0].subtitle,
+      "Subtítulo personalizado",
+    );
+    const legacy = structuredClone(library);
+    delete legacy.projects[0].board.scenes[0].subtitle;
+    assert.ok(validLibrary(legacy));
+    const invalid = structuredClone(library);
+    invalid.projects[0].board.scenes[0].subtitle = 123;
+    assert.equal(validLibrary(invalid), false);
+    assert.equal(makeProject("Projeto vazio").board.scenes[0].subtitle, "");
+  },
+);
 test("merge preserves originals, order, animations and internal connector bindings", () => {
   const library = initialLibrary();
   const extra = makeProject("Segundo", true);

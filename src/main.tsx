@@ -34,8 +34,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Keyboard,
-  Sun,
-  Moon,
   GripVertical,
   Settings2,
   FolderOpen,
@@ -52,12 +50,13 @@ import {
   type Scene,
   type Tool,
   colors,
+  defaultSectionSubtitle,
   uid,
   type Transition,
 } from "./model";
 import { type Library } from "./library";
 import { InsertPanel } from "./InsertPanel";
-import { iconByName } from "./icons";
+import { iconByName, iconCatalog } from "./icons";
 import { BoardMedia } from "./BoardMedia";
 import { ArrowVisual } from "./ArrowVisual";
 import { AnimationControls, TransitionControls } from "./AnimationControls";
@@ -103,10 +102,48 @@ const tools: { id: Tool; label: string; key: string; icon: typeof Square }[] = [
 ];
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const measure = document.createElement("canvas").getContext("2d")!;
+const accentOptions = [
+  { id: "mint", color: "#8fe3b5", label: "Menta" },
+  { id: "blue", color: "#83b9ed", label: "Azul" },
+  { id: "violet", color: "#c2a1ed", label: "Violeta" },
+  { id: "coral", color: "#f09a8b", label: "Coral" },
+] as const;
+const canvasOptions = ["dots", "grid", "plain"] as const;
+const fontStacks: Record<NonNullable<Item["fontFamily"]>, string> = {
+  Caveat: '"Caveat", cursive',
+  "DM Sans": '"DM Sans", sans-serif',
+  Georgia: "Georgia, serif",
+  monospace: "monospace",
+  Arial: "Arial, sans-serif",
+  Calibri: "Calibri, sans-serif",
+  "Segoe UI": '"Segoe UI", sans-serif',
+  Verdana: "Verdana, sans-serif",
+  Tahoma: "Tahoma, sans-serif",
+  "Trebuchet MS": '"Trebuchet MS", sans-serif',
+  Bahnschrift: "Bahnschrift, sans-serif",
+  "Times New Roman": '"Times New Roman", serif',
+  Cambria: "Cambria, serif",
+  "Palatino Linotype": '"Palatino Linotype", serif',
+  Consolas: "Consolas, monospace",
+  "Courier New": '"Courier New", monospace',
+  "Comic Sans MS": '"Comic Sans MS", cursive',
+  "Segoe Print": '"Segoe Print", cursive',
+  "Segoe Script": '"Segoe Script", cursive',
+  Impact: "Impact, sans-serif",
+};
+const fontGroups: { label: string; families: NonNullable<Item["fontFamily"]>[] }[] = [
+  { label: "Sem serifa", families: ["DM Sans", "Arial", "Calibri", "Segoe UI", "Verdana", "Tahoma", "Trebuchet MS", "Bahnschrift"] },
+  { label: "Com serifa", families: ["Georgia", "Times New Roman", "Cambria", "Palatino Linotype"] },
+  { label: "Monoespaçadas", families: ["monospace", "Consolas", "Courier New"] },
+  { label: "Manuscritas", families: ["Caveat", "Comic Sans MS", "Segoe Print", "Segoe Script"] },
+  { label: "Destaque", families: ["Impact"] },
+];
+const itemTextColor = (i: Item) =>
+  i.textColor ?? (i.type === "note" ? "#19342a" : i.color);
 function wrapText(i: Item): string[] {
   const max = i.w - (i.type === "agent" ? 94 : 32);
   return i.text.split("\n").flatMap((line, n) => {
-    measure.font = `500 ${i.type === "agent" && n ? i.size * 0.72 : i.size}px Caveat`;
+    measure.font = `500 ${i.type === "agent" && n ? i.size * 0.72 : i.size}px ${fontStacks[i.fontFamily || "Caveat"]}`;
     const words = line.split(" "),
       rows: string[] = [];
     let row = "";
@@ -170,8 +207,23 @@ function App({ initial }: { initial: Library }) {
     [light, setLight] = useState(
       () => localStorage.getItem("orquestra-theme") === "light",
     ),
+    [accent, setAccent] = useState(() => {
+      const saved = localStorage.getItem("orquestra-accent");
+      return accentOptions.some((option) => option.id === saved)
+        ? saved!
+        : "mint";
+    }),
+    [canvasPattern, setCanvasPattern] = useState(() => {
+      const saved = localStorage.getItem("orquestra-canvas");
+      return canvasOptions.includes(saved as (typeof canvasOptions)[number])
+        ? saved!
+        : "dots";
+    }),
     [toast, setToast] = useState(""),
     [editing, setEditing] = useState<string | null>(null),
+    [editingSceneField, setEditingSceneField] = useState<
+      "name" | "description" | "subtitle" | null
+    >(null),
     [saved, setSaved] = useState(true),
     [view, setView] = useState({ x: 0, y: 0, z: 1 }),
     [smooth, setSmooth] = useState(false);
@@ -217,6 +269,8 @@ function App({ initial }: { initial: Library }) {
   const scene = board.scenes.find((s) => s.id === sceneId) || board.scenes[0],
     index = board.scenes.indexOf(scene),
     sel = scene.items.find((i) => selected.includes(i.id)),
+    sceneSubtitle =
+      scene.subtitle ?? (index === 0 ? defaultSectionSubtitle : ""),
     maxStep = Math.max(0, ...scene.items.map((i) => i.step));
   sceneRef.current = scene;
   useEffect(() => {
@@ -230,8 +284,10 @@ function App({ initial }: { initial: Library }) {
   useEffect(() => {
     try {
       localStorage.setItem("orquestra-theme", light ? "light" : "dark");
+      localStorage.setItem("orquestra-accent", accent);
+      localStorage.setItem("orquestra-canvas", canvasPattern);
     } catch {}
-  }, [light]);
+  }, [light, accent, canvasPattern]);
   const notify = (s: string) => setToast(s);
   useEffect(() => {
     if (toast) {
@@ -333,6 +389,17 @@ function App({ initial }: { initial: Library }) {
       ...s,
       items: s.items.map((i) => (selected.includes(i.id) ? { ...i, ...v } : i)),
     }));
+  const updateBorderColor = (value: string) => {
+    setColor(value);
+    updateScene((s) => ({
+      ...s,
+      items: s.items.map((i) =>
+        selected.includes(i.id)
+          ? { ...i, color: value, textColor: itemTextColor(i) }
+          : i,
+      ),
+    }));
+  };
   const undo = () => {
     const b = history.current.pop();
     if (b) {
@@ -407,6 +474,7 @@ function App({ initial }: { initial: Library }) {
     setSceneId(next.id);
     setSelected([]);
     setEditing(null);
+    setEditingSceneField(null);
     setStep(0);
     fit();
   };
@@ -828,11 +896,18 @@ function App({ initial }: { initial: Library }) {
           ...s,
           items: s.items.map((i) => {
             const original = g.items.find((o: Item) => o.id === i.id);
+            const lockShape =
+              e.shiftKey &&
+              g.ids.length === 1 &&
+              ["rect", "ellipse"].includes(i.type);
+            const side = lockShape
+              ? Math.max(40, original.w + dx, original.h + dy)
+              : undefined;
             return g.ids.includes(i.id)
               ? {
                   ...i,
-                  w: Math.max(40, original.w + dx),
-                  h: Math.max(30, original.h + dy),
+                  w: side ?? Math.max(40, original.w + dx),
+                  h: side ?? Math.max(30, original.h + dy),
                 }
               : i;
           }),
@@ -848,13 +923,22 @@ function App({ initial }: { initial: Library }) {
               ? { ...i, points: [...i.points!, [dx, dy]] }
               : i.type === "arrow"
                 ? { ...i, w: dx, h: dy, to: hit(p)?.id }
-                : {
+              : (() => {
+                  const lockShape =
+                    e.shiftKey && ["rect", "ellipse"].includes(i.type);
+                  const side = Math.max(Math.abs(dx), Math.abs(dy));
+                  const width = lockShape ? side : Math.abs(dx);
+                  const height = lockShape ? side : Math.abs(dy);
+                  const signedX = dx < 0 ? -width : width;
+                  const signedY = dy < 0 ? -height : height;
+                  return {
                     ...i,
-                    x: Math.min(g.p.x, p.x),
-                    y: Math.min(g.p.y, p.y),
-                    w: Math.abs(dx),
-                    h: Math.abs(dy),
-                  },
+                    x: g.p.x + Math.min(0, signedX),
+                    y: g.p.y + Math.min(0, signedY),
+                    w: width,
+                    h: height,
+                  };
+                })(),
         ),
       }));
   };
@@ -886,13 +970,80 @@ function App({ initial }: { initial: Library }) {
         ...s,
         items: s.items.map((i) =>
           i.id === g.id && !["pen", "arrow"].includes(i.type) && i.w < 10
-            ? { ...i, w: 220, h: 100 }
+            ? {
+                ...i,
+                w: 220,
+                h: e.shiftKey && ["rect", "ellipse"].includes(i.type) ? 220 : 100,
+              }
             : i,
         ),
       }));
       setTool("select");
     }
     gesture.current = null;
+  };
+  const createTextAt = (p: { x: number; y: number }) => {
+    const i: Item = {
+      id: uid(),
+      type: "text",
+      x: p.x - 16,
+      y: p.y - 30,
+      w: 300,
+      h: 90,
+      text: "",
+      color,
+      fill: "transparent",
+      size: 28,
+      fontFamily: "Caveat",
+      step: 0,
+      animation: "fade",
+    };
+    checkpoint();
+    updateScene((s) => ({ ...s, items: [...s.items, i] }));
+    setSelected([i.id]);
+    setTool("select");
+    setTab("style");
+    setSidebar(true);
+    setEditing(i.id);
+  };
+  const editItem = (i: Item) => {
+    if (present) return;
+    setSelected([i.id]);
+    setTab("style");
+    setSidebar(true);
+    if (["image", "video", "audio", "file", "link", "icon"].includes(i.type)) {
+      if (!["image", "icon"].includes(i.type)) setInteractId(i.id);
+    } else if (!["arrow", "pen"].includes(i.type)) {
+      checkpoint();
+      setEditing(i.id);
+    }
+  };
+  const canvasDoubleClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (present || editing) return;
+    // Pointer capture can retarget dblclick to the SVG; inspect the element
+    // under the released pointer so an existing item is edited, not duplicated.
+    const target = document.elementFromPoint(e.clientX, e.clientY) || e.target as Element;
+    const itemId = target.closest("[data-item]")?.getAttribute("data-item");
+    const existing = scene.items.find((i) => i.id === itemId);
+    if (existing) {
+      e.preventDefault();
+      e.stopPropagation();
+      editItem(existing);
+      return;
+    }
+    if (
+      target.closest(
+        "[data-item], [data-selection], [data-resize], [data-scene-header], .scene-heading-editable, [data-media-control]",
+      )
+    )
+      return;
+    settleForInteraction();
+    const p = point(e);
+    // Keep the section title area reserved for its existing inline editors.
+    if (p.x >= 0 && p.x <= 1140 && p.y >= 0 && p.y < 165) return;
+    e.preventDefault();
+    e.stopPropagation();
+    createTextAt(p);
   };
   const zoom = (z: number) => {
     const el = canvasRef.current!;
@@ -942,6 +1093,7 @@ function App({ initial }: { initial: Library }) {
       id: uid(),
       name: "Nova seção",
       description: "Uma nova ideia começa aqui.",
+      subtitle: "",
       items: [],
       duration: 6,
     };
@@ -1096,7 +1248,7 @@ function App({ initial }: { initial: Library }) {
         text.setAttribute("y", String(item.y + 36));
         text.setAttribute("font-size", "20");
         text.setAttribute("font-family", "DM Sans");
-        text.setAttribute("fill", mappedColor(item.color));
+        text.setAttribute("fill", mappedColor(itemTextColor(item)));
         text.textContent = (
           item.assetName ||
           item.text ||
@@ -1415,23 +1567,9 @@ function App({ initial }: { initial: Library }) {
           pointerEvents: hidden ? "none" : undefined,
           animationDuration: `${i.animationMs || 650}ms`,
         }}
-        onDoubleClick={() => {
-          if (
-            ["image", "video", "audio", "file", "link", "icon"].includes(i.type)
-          ) {
-            if (!present) {
-              setSelected([i.id]);
-              setTab("style");
-              setSidebar(true);
-              if (i.type !== "image" && i.type !== "icon") setInteractId(i.id);
-            }
-            return;
-          }
-          if (!present && !["arrow", "pen"].includes(i.type)) {
-            setEditing(i.id);
-            setSelected([i.id]);
-            checkpoint();
-          }
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          editItem(i);
         }}
       >
         {i.type === "icon" ? (
@@ -1497,7 +1635,10 @@ function App({ initial }: { initial: Library }) {
                 y={i.y}
                 width={i.w}
                 height={i.h}
-                fill="transparent"
+                fill={i.fill}
+                fillOpacity={i.fillOpacity ?? 1}
+                stroke={i.fill === "transparent" ? "none" : c}
+                strokeWidth="2"
                 pointerEvents="all"
               />
             )}
@@ -1510,6 +1651,7 @@ function App({ initial }: { initial: Library }) {
                 stroke={c}
                 strokeWidth={2}
                 fill={i.fill}
+                fillOpacity={i.fillOpacity ?? 1}
               />
             ) : i.type !== "text" ? (
               <rect
@@ -1519,7 +1661,7 @@ function App({ initial }: { initial: Library }) {
                 height={i.h}
                 rx={i.type === "note" ? 2 : i.type === "frame" ? 5 : 15}
                 fill={i.type === "note" ? i.fill : i.fill}
-                fillOpacity={i.type === "note" ? 0.9 : 1}
+                fillOpacity={i.fillOpacity ?? (i.type === "note" ? 0.9 : 1)}
                 stroke={c}
                 strokeWidth={i.type === "frame" ? 1.5 : 2}
                 strokeDasharray={i.type === "frame" ? "8 6" : undefined}
@@ -1533,7 +1675,9 @@ function App({ initial }: { initial: Library }) {
                 strokeWidth="1.7"
                 fill="none"
               >
-                {i.text.startsWith("Pesquisador") ? (
+                {i.icon ? (
+                  <Icon x={0} y={0} width={32} height={32} color={c} strokeWidth={1.7} />
+                ) : i.text.startsWith("Pesquisador") ? (
                   <>
                     <circle cx="12" cy="12" r="11" />
                     <path d="m20 20 10 10" />
@@ -1587,8 +1731,8 @@ function App({ initial }: { initial: Library }) {
               textAnchor={
                 ["agent", "text", "note"].includes(i.type) ? "start" : "middle"
               }
-              fill={i.type === "note" ? "#19342a" : c}
-              fontFamily="Caveat, cursive"
+              fill={mappedColor(itemTextColor(i))}
+              fontFamily={fontStacks[i.fontFamily || "Caveat"]}
               fontSize={i.size}
               style={{ userSelect: "none", pointerEvents: "none" }}
             >
@@ -1651,7 +1795,7 @@ function App({ initial }: { initial: Library }) {
   };
   return (
     <div
-      className={`app ${light ? "light" : ""} ${present ? "presenting" : ""}`}
+      className={`app ${light ? "light" : ""} accent-${accent} ${present ? "presenting" : ""}`}
     >
       {insertTab && (
         <InsertPanel
@@ -1728,11 +1872,15 @@ function App({ initial }: { initial: Library }) {
             <Save size={17} />
           </button>
           <button
-            className="icon-button theme"
-            title={light ? "Tema escuro" : "Tema claro"}
-            onClick={() => setLight(!light)}
+            className="icon-button"
+            aria-label="Abrir configurações do board"
+            title="Configurações do board"
+            onClick={() => {
+              setTab("settings");
+              setSidebar(true);
+            }}
           >
-            {light ? <Moon /> : <Sun />}
+            <Settings2 size={17} />
           </button>
           <button className="present-button" onClick={startPresentation}>
             <Play size={15} fill="currentColor" /> <span>Apresentar</span>
@@ -1806,7 +1954,7 @@ function App({ initial }: { initial: Library }) {
       </header>
       <main>
         <div
-          className="canvas"
+          className={`canvas canvas-${canvasPattern}`}
           ref={canvasRef}
           onDragOver={(e) => {
             if (!present) e.preventDefault();
@@ -1825,6 +1973,7 @@ function App({ initial }: { initial: Library }) {
             onPointerMove={move}
             onPointerUp={up}
             onPointerCancel={() => cancelGesture()}
+            onDoubleClick={canvasDoubleClick}
             onDragStart={(e) => e.preventDefault()}
           >
             <defs>
@@ -1867,13 +2016,30 @@ function App({ initial }: { initial: Library }) {
                 style={{ animationDuration: `${transition.ms}ms` }}
               >
                 <text
+                  className={!present ? "scene-heading-editable" : undefined}
                   x="40"
                   y="32"
                   fill={mappedColor(colors[1])}
                   fontFamily="DM Sans, sans-serif"
                   fontSize="12"
                   letterSpacing="2"
+                  aria-label="Nome da seção no canvas"
+                  onPointerDown={
+                    !present ? (e) => e.stopPropagation() : undefined
+                  }
+                  onDoubleClick={
+                    !present
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setEditingSceneField("name");
+                        }
+                      : undefined
+                  }
                 >
+                  {!present && (
+                    <title>Duplo clique para editar o nome da seção</title>
+                  )}
                   {String(index + 1).padStart(2, "0")} /{" "}
                   {scene.name.toLocaleUpperCase("pt-BR")}
                 </text>
@@ -1884,6 +2050,7 @@ function App({ initial }: { initial: Library }) {
                   strokeWidth="1.3"
                 />
                 <text
+                  className={!present ? "scene-heading-editable" : undefined}
                   x="570"
                   y="103"
                   textAnchor="middle"
@@ -1891,10 +2058,26 @@ function App({ initial }: { initial: Library }) {
                   fontFamily="Caveat, cursive"
                   fontSize="59"
                   fontWeight="500"
+                  aria-label="Título da seção no canvas"
+                  onPointerDown={
+                    !present ? (e) => e.stopPropagation() : undefined
+                  }
+                  onDoubleClick={
+                    !present
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setEditingSceneField("description");
+                        }
+                      : undefined
+                  }
                 >
+                  {!present && (
+                    <title>Duplo clique para editar o título da seção</title>
+                  )}
                   {scene.description}
                 </text>
-                {index === 0 && (
+                {!!sceneSubtitle && (
                   <>
                     <path
                       d="M545 116 Q760 108 1020 117"
@@ -1903,15 +2086,35 @@ function App({ initial }: { initial: Library }) {
                       strokeWidth="2.5"
                     />
                     <text
+                      className={
+                        !present ? "scene-heading-editable" : undefined
+                      }
                       x="570"
                       y="150"
                       textAnchor="middle"
                       fill={mappedColor(colors[0])}
                       fontFamily="Caveat, cursive"
                       fontSize="23"
+                      aria-label="Subtítulo da seção no canvas"
+                      onPointerDown={
+                        !present ? (e) => e.stopPropagation() : undefined
+                      }
+                      onDoubleClick={
+                        !present
+                          ? (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setEditingSceneField("subtitle");
+                            }
+                          : undefined
+                      }
                     >
-                      Um orquestrador conecta as peças. Cada agente faz o que
-                      sabe melhor.
+                      {!present && (
+                        <title>
+                          Duplo clique para editar o subtítulo da seção
+                        </title>
+                      )}
+                      {sceneSubtitle}
                     </text>
                   </>
                 )}
@@ -1956,6 +2159,56 @@ function App({ initial }: { initial: Library }) {
               )}
             </g>
           </svg>
+          {editingSceneField && (
+            <input
+              key={editingSceneField}
+              autoFocus
+              className={`canvas-scene-edit canvas-scene-edit-${editingSceneField}`}
+              aria-label={
+                editingSceneField === "name"
+                  ? "Nome da seção"
+                  : editingSceneField === "description"
+                    ? "Título da seção"
+                    : "Subtítulo da seção"
+              }
+              style={
+                editingSceneField === "name"
+                  ? {
+                      left: view.x + 40 * view.z,
+                      top: view.y + 14 * view.z,
+                    }
+                  : editingSceneField === "description"
+                    ? {
+                        left: view.x + 570 * view.z,
+                        top: view.y + 66 * view.z,
+                      }
+                    : {
+                        left: view.x + 570 * view.z,
+                        top: view.y + 128 * view.z,
+                      }
+              }
+              value={
+                editingSceneField === "subtitle"
+                  ? sceneSubtitle
+                  : scene[editingSceneField]
+              }
+              onFocus={checkpoint}
+              onChange={(e) =>
+                updateScene((s) => ({
+                  ...s,
+                  [editingSceneField]: e.target.value,
+                }))
+              }
+              onBlur={() => setEditingSceneField(null)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Escape" || e.key === "Enter") {
+                  e.preventDefault();
+                  setEditingSceneField(null);
+                }
+              }}
+            />
+          )}
           {editing &&
             (() => {
               const i = scene.items.find((i) => i.id === editing);
@@ -1971,8 +2224,10 @@ function App({ initial }: { initial: Library }) {
                     width: Math.max(160, i.w * view.z),
                     height: Math.max(85, i.h * view.z),
                     fontSize: i.size * view.z,
-                    color: i.color,
+                    color: mappedColor(itemTextColor(i)),
+                    fontFamily: fontStacks[i.fontFamily || "Caveat"],
                   }}
+                  placeholder="Digite seu texto"
                   value={i.text}
                   onChange={(e) =>
                     updateScene((s) => ({
@@ -2179,6 +2434,14 @@ function App({ initial }: { initial: Library }) {
                 Estilo
               </button>
               <button
+                className={`board-settings-tab ${tab === "settings" ? "active" : ""}`}
+                aria-label="Configurações do board"
+                title="Configurações do board"
+                onClick={() => setTab("settings")}
+              >
+                <Settings2 size={16} />
+              </button>
+              <button
                 className="collapse"
                 title="Recolher painel"
                 onClick={() => setSidebar(false)}
@@ -2192,6 +2455,10 @@ function App({ initial }: { initial: Library }) {
                   <span>SUA HISTÓRIA, EM PARTES</span>
                   <span className="tiny-dot" />
                 </div>
+                <p className="section-edit-hint">
+                  Duplo clique no nome, título ou subtítulo do canvas para
+                  editar.
+                </p>
                 <div className="section-list">
                   {board.scenes.map((s, n) => (
                     <button
@@ -2237,6 +2504,20 @@ function App({ initial }: { initial: Library }) {
                       }
                     />
                   </label>
+                  <label>
+                    Subtítulo no canvas
+                    <textarea
+                      aria-label="Subtítulo da seção"
+                      value={sceneSubtitle}
+                      onFocus={checkpoint}
+                      onChange={(e) =>
+                        updateScene((s) => ({
+                          ...s,
+                          subtitle: e.target.value,
+                        }))
+                      }
+                    />
+                  </label>
                   <div className="section-settings-row">
                     <span>Ordem da seção</span>
                     <button
@@ -2269,13 +2550,67 @@ function App({ initial }: { initial: Library }) {
                   </button>
                 </div>
               </>
+            ) : tab === "settings" ? (
+              <div className="style-panel board-settings-panel">
+                <div className="panel-heading">
+                  <Settings2 size={15} />
+                  Configurações do board
+                </div>
+                <section className="appearance-options" aria-label="Aparência do quadro">
+                  <div className="panel-subheading">Aparência do quadro</div>
+                  <label>Tema</label>
+                  <div className="segmented">
+                    <button
+                      className={!light ? "active" : ""}
+                      aria-pressed={!light}
+                      onClick={() => setLight(false)}
+                    >
+                      Escuro
+                    </button>
+                    <button
+                      className={light ? "active" : ""}
+                      aria-pressed={light}
+                      onClick={() => setLight(true)}
+                    >
+                      Claro
+                    </button>
+                  </div>
+                  <label>Cor de destaque</label>
+                  <div className="swatches accent-swatches">
+                    {accentOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        aria-label={`Destaque ${option.label}`}
+                        aria-pressed={accent === option.id}
+                        title={option.label}
+                        className={accent === option.id ? "chosen" : ""}
+                        style={{ background: option.color }}
+                        onClick={() => setAccent(option.id)}
+                      />
+                    ))}
+                  </div>
+                  <label htmlFor="canvas-background">Fundo do canvas</label>
+                  <select
+                    id="canvas-background"
+                    aria-label="Fundo do canvas"
+                    value={canvasPattern}
+                    onChange={(e) =>
+                      setCanvasPattern(e.target.value as (typeof canvasOptions)[number])
+                    }
+                  >
+                    <option value="dots">Pontos</option>
+                    <option value="grid">Grade</option>
+                    <option value="plain">Liso</option>
+                  </select>
+                </section>
+              </div>
             ) : (
               <div className="style-panel">
                 <div className="panel-heading">
                   <Settings2 size={15} />
                   {sel ? "Elemento selecionado" : "Ferramenta de desenho"}
                 </div>
-                <label>Cor do traço</label>
+                <label>Cor da borda</label>
                 <div className="swatches">
                   {colors.map((c) => (
                     <button
@@ -2285,16 +2620,54 @@ function App({ initial }: { initial: Library }) {
                       className={(sel?.color || color) === c ? "chosen" : ""}
                       style={{ background: c }}
                       onClick={() => {
-                        setColor(c);
-                        if (sel)
-                          patch({
-                            color: c,
-                            ...(sel.type === "note" ? { fill: c } : {}),
-                          });
+                        if (sel) checkpoint();
+                        updateBorderColor(c);
                       }}
                     />
                   ))}
                 </div>
+                <label className="color-picker-row">
+                  Cor personalizada
+                  <input
+                    aria-label="Cor personalizada da borda"
+                    type="color"
+                    value={/^#[\da-f]{6}$/i.test(sel?.color || color)
+                      ? sel?.color || color
+                      : "#8fe3b5"}
+                    onFocus={checkpoint}
+                    onChange={(e) => updateBorderColor(e.target.value)}
+                  />
+                </label>
+                {sel && !["arrow", "pen", "icon", "image", "video", "audio", "file", "link"].includes(sel.type) && (
+                  <>
+                    <label>Cor do texto</label>
+                    <div className="swatches">
+                      {colors.map((c) => (
+                        <button
+                          key={c}
+                          aria-label={`Texto ${c}`}
+                          title={`Texto ${c}`}
+                          className={itemTextColor(sel) === c ? "chosen" : ""}
+                          style={{ background: c }}
+                          onClick={() => patch({ textColor: c })}
+                        />
+                      ))}
+                    </div>
+                    <label className="color-picker-row">
+                      Cor personalizada do texto
+                      <input
+                        aria-label="Cor personalizada do texto"
+                        type="color"
+                        value={/^#[\da-f]{6}$/i.test(itemTextColor(sel)) ? itemTextColor(sel) : "#e2e9e2"}
+                        onFocus={checkpoint}
+                        onChange={(e) => updateScene((s) => ({
+                          ...s,
+                          items: s.items.map((i) => selected.includes(i.id) ? { ...i, textColor: e.target.value } : i),
+                        }))}
+                      />
+                    </label>
+                  </>
+                )}
                 {sel ? (
                   <>
                     {selected.length === 1 &&
@@ -2393,27 +2766,168 @@ function App({ initial }: { initial: Library }) {
                             }))
                           }
                         />
-                        <label>Preenchimento</label>
-                        <div className="segmented">
+                        {selected.length === 1 && (
+                          <>
+                            <label htmlFor="element-text">Texto do elemento</label>
+                            <textarea
+                              id="element-text"
+                              aria-label="Texto do elemento no painel Estilo"
+                              className="element-text-editor"
+                              rows={4}
+                              value={sel.text}
+                              onFocus={checkpoint}
+                              onChange={(e) =>
+                                updateScene((s) => ({
+                                  ...s,
+                                  items: s.items.map((i) =>
+                                    i.id === sel.id
+                                      ? { ...i, text: e.target.value }
+                                      : i,
+                                  ),
+                                }))
+                              }
+                            />
+                            <label htmlFor="element-font">Fonte</label>
+                            <select
+                              id="element-font"
+                              aria-label="Fonte do elemento"
+                              value={sel.fontFamily || "Caveat"}
+                              style={{ fontFamily: fontStacks[sel.fontFamily || "Caveat"] }}
+                              onFocus={checkpoint}
+                              onChange={(e) =>
+                                updateScene((s) => ({
+                                  ...s,
+                                  items: s.items.map((i) =>
+                                    i.id === sel.id
+                                      ? {
+                                          ...i,
+                                          fontFamily: e.target.value as Item["fontFamily"],
+                                        }
+                                      : i,
+                                  ),
+                                }))
+                              }
+                            >
+                              {fontGroups.map((group) => (
+                                <optgroup key={group.label} label={group.label}>
+                                  {group.families.map((family) => (
+                                    <option key={family} value={family} style={{ fontFamily: fontStacks[family] }}>
+                                      {family === "monospace" ? "Monoespaçada" : family}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </select>
+                          </>
+                        )}
+                        {sel.type === "agent" && selected.length === 1 && (
+                          <>
+                            <label htmlFor="agent-icon">Símbolo do cartão</label>
+                            <select
+                              id="agent-icon"
+                              aria-label="Símbolo dentro do cartão Agente"
+                              value={sel.icon || ""}
+                              onFocus={checkpoint}
+                              onChange={(e) =>
+                                updateScene((s) => ({
+                                  ...s,
+                                  items: s.items.map((i) =>
+                                    i.id === sel.id
+                                      ? { ...i, icon: e.target.value || undefined }
+                                      : i,
+                                  ),
+                                }))
+                              }
+                            >
+                              <option value="">Padrão do cartão</option>
+                              {[...new Set(iconCatalog.map((entry) => entry.category))].map(
+                                (category) => (
+                                  <optgroup key={category} label={category}>
+                                    {iconCatalog
+                                      .filter((entry) => entry.category === category)
+                                      .map((entry) => (
+                                        <option key={entry.name} value={entry.name}>
+                                          {entry.label}
+                                        </option>
+                                      ))}
+                                  </optgroup>
+                                ),
+                              )}
+                            </select>
+                            <p className="field-help">
+                              Escolha um símbolo da biblioteca para o lado esquerdo do cartão.
+                            </p>
+                          </>
+                        )}
+                        {!["arrow", "pen", "icon", "image", "video", "audio", "file", "link"].includes(sel.type) && (
+                          <>
+                            <label>Preenchimento <span>independente da borda</span></label>
+                            <div className="fill-controls">
                           <button
-                            className={
-                              sel.fill === "transparent" ? "active" : ""
-                            }
+                            className={`fill-clear ${sel.fill === "transparent" ? "active" : ""}`}
+                            aria-pressed={sel.fill === "transparent"}
                             onClick={() => patch({ fill: "transparent" })}
                           >
-                            Vazio
+                            Transparente
                           </button>
-                          <button
-                            className={
-                              sel.fill !== "transparent" ? "active" : ""
-                            }
-                            onClick={() =>
-                              patch({ fill: light ? "#e0ebe1" : "#162c23" })
-                            }
-                          >
-                            Sólido
-                          </button>
-                        </div>
+                              <input
+                                aria-label="Cor de preenchimento personalizada"
+                                title="Cor de preenchimento personalizada"
+                                type="color"
+                                value={/^#[\da-f]{6}$/i.test(sel.fill)
+                                  ? sel.fill
+                                  : light
+                                    ? "#e0ebe1"
+                                    : "#162c23"}
+                                onFocus={checkpoint}
+                                onChange={(e) =>
+                                  updateScene((s) => ({
+                                    ...s,
+                                    items: s.items.map((i) =>
+                                      i.id === sel.id
+                                        ? { ...i, fill: e.target.value }
+                                        : i,
+                                    ),
+                                  }))
+                                }
+                              />
+                            </div>
+                            <div className="swatches fill-swatches">
+                              {colors.map((c) => (
+                                <button
+                                  key={c}
+                                  aria-label={`Preenchimento ${c}`}
+                                  title={`Preenchimento ${c}`}
+                                  className={sel.fill === c ? "chosen" : ""}
+                                  style={{ background: c }}
+                                  onClick={() => patch({ fill: c })}
+                                />
+                              ))}
+                            </div>
+                            <label>
+                              Opacidade do preenchimento
+                              <span>{Math.round((sel.fillOpacity ?? (sel.type === "note" ? 0.9 : 1)) * 100)}%</span>
+                            </label>
+                            <input
+                              aria-label="Opacidade do preenchimento"
+                              type="range"
+                              min="0"
+                              max="100"
+                              value={Math.round((sel.fillOpacity ?? (sel.type === "note" ? 0.9 : 1)) * 100)}
+                              onPointerDown={checkpoint}
+                              onChange={(e) =>
+                                updateScene((s) => ({
+                                  ...s,
+                                  items: s.items.map((i) =>
+                                    i.id === sel.id
+                                      ? { ...i, fillOpacity: +e.target.value / 100 }
+                                      : i,
+                                  ),
+                                }))
+                              }
+                            />
+                          </>
+                        )}
                       </>
                     )}
                     <AnimationControls

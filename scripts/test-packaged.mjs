@@ -10,7 +10,9 @@ import electron from "electron";
 const sourceMode = process.env.ORQUESTRA_TEST_SOURCE === "1";
 const executable = sourceMode
   ? electron
-  : path.resolve("release/win-unpacked/Orquestra.exe");
+  : path.resolve(
+      process.env.ORQUESTRA_TEST_EXE || "release/win-unpacked/Orquestra.exe",
+    );
 const profile = await mkdtemp(path.join(os.tmpdir(), "orquestra-packaged-"));
 const probe = net.createServer();
 await new Promise((r) => probe.listen(0, "127.0.0.1", r));
@@ -33,7 +35,11 @@ const pending = new Map();
 const cdp = (method, params = {}) =>
   new Promise((resolve, reject) => {
     const key = ++id;
-    pending.set(key, { resolve, reject });
+    const timer = setTimeout(() => {
+      pending.delete(key);
+      reject(new Error("CDP timeout: " + method));
+    }, 30000);
+    pending.set(key, { resolve, reject, timer });
     ws.send(JSON.stringify({ id: key, method, params }));
   });
 const run = async (expression) => {
@@ -76,6 +82,7 @@ try {
     const task = pending.get(message.id);
     if (task) {
       pending.delete(message.id);
+      clearTimeout(task.timer);
       message.error
         ? task.reject(new Error(JSON.stringify(message.error)))
         : task.resolve(message.result);
@@ -195,6 +202,80 @@ try {
     );
     await delay(50);
   };
+  const editCanvasHeading = async (field, value, expected) => {
+    const label = {
+      name: "Nome da seção no canvas",
+      description: "Título da seção no canvas",
+      subtitle: "Subtítulo da seção no canvas",
+    }[field];
+    const selector = `text.scene-heading-editable[aria-label=${JSON.stringify(label)}]`;
+    const point = await run(
+      `(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`,
+    );
+    for (const clickCount of [1, 2]) {
+      await cdp("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        buttons: 1,
+        clickCount,
+      });
+      await cdp("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        buttons: 0,
+        clickCount,
+      });
+      if (clickCount === 1) await delay(100);
+    }
+    const inputSelector = ".canvas-scene-edit";
+    await waitFor(
+      () => run(`!!document.querySelector(${JSON.stringify(inputSelector)})`),
+      `${field} heading editor`,
+    );
+    await edit(inputSelector, value);
+    await run(
+      `document.querySelector(${JSON.stringify(inputSelector)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`,
+    );
+    await waitFor(
+      () =>
+        run(
+          `document.querySelector(${JSON.stringify(selector)}).textContent.includes(${JSON.stringify(expected)})`,
+        ),
+      `${field} heading update`,
+    );
+  };
+  await editCanvasHeading(
+    "name",
+    "Seção editada no canvas",
+    "SEÇÃO EDITADA NO CANVAS",
+  );
+  await editCanvasHeading(
+    "description",
+    "Título alterado pelo canvas",
+    "Título alterado pelo canvas",
+  );
+  await run('document.querySelector(".aside-tabs button").click()');
+  await delay(60);
+  await edit(
+    '.section-settings textarea[aria-label="Subtítulo da seção"]',
+    "Subtítulo inicial da seção.",
+  );
+  await waitFor(
+    () =>
+      run(
+        'document.querySelector(\'text[aria-label="Subtítulo da seção no canvas"]\')?.textContent.includes("Subtítulo inicial da seção.")',
+      ),
+    "subtitle from section panel",
+  );
+  await editCanvasHeading(
+    "subtitle",
+    "Subtítulo editado no canvas.",
+    "Subtítulo editado no canvas.",
+  );
   const arrange = async (selector, geometry) => {
     await run(
       `document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`,
@@ -295,8 +376,25 @@ try {
   const file = path.join(profile, "biblioteca.json");
   await waitFor(async () => {
     const l = JSON.parse(await readFile(file, "utf8"));
-    return l.projects.length === 2;
+    return (
+      l.projects.length === 2 &&
+      l.projects.some((project) =>
+        project.board.scenes.some(
+          (savedScene) =>
+            savedScene.subtitle === "Subtítulo editado no canvas.",
+        ),
+      )
+    );
   }, "packaged save");
+  const savedLibrary = JSON.parse(await readFile(file, "utf8"));
+  assert.ok(
+    savedLibrary.projects.some((project) =>
+      project.board.scenes.some(
+        (savedScene) => savedScene.subtitle === "Subtítulo editado no canvas.",
+      ),
+    ),
+    "section subtitle persists to the packaged library",
+  );
   await run("window.__beforeReload=true");
   await cdp("Page.reload");
   await waitFor(
@@ -372,6 +470,9 @@ try {
         persistence: true,
         media: mediaEvidence,
         selection: selectionEvidence,
+        sectionHeadingEditing: true,
+        sectionSubtitleEditing: true,
+        sectionSubtitlePersistence: true,
         iconLibrary: 109,
         particles: true,
         transitions: true,
@@ -387,6 +488,9 @@ try {
       projects: disk.projects.length,
       persistence: true,
       media: mediaEvidence,
+      sectionHeadingEditing: true,
+      sectionSubtitleEditing: true,
+      sectionSubtitlePersistence: true,
     }),
   );
   await run("window.close()").catch(() => {});

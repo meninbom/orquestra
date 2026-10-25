@@ -35,6 +35,7 @@ export function makeProject(title: string, template = false): Project {
             id: uid(),
             name: "Primeira seção",
             description: "Uma nova ideia começa aqui.",
+            subtitle: "",
             duration: 6,
             items: [],
           },

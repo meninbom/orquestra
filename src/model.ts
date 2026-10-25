@@ -36,6 +36,13 @@ export const transitions = [
   "flip",
 ] as const;
 export type Transition = (typeof transitions)[number];
+export const fontFamilies = [
+  "Caveat", "DM Sans", "Georgia", "monospace",
+  "Arial", "Calibri", "Segoe UI", "Verdana", "Tahoma", "Trebuchet MS",
+  "Bahnschrift", "Times New Roman", "Cambria", "Palatino Linotype",
+  "Consolas", "Courier New", "Comic Sans MS", "Segoe Print", "Segoe Script", "Impact",
+] as const;
+export type FontFamily = (typeof fontFamilies)[number];
 export type Item = {
   id: string;
   type: Tool;
@@ -45,8 +52,11 @@ export type Item = {
   h: number;
   text: string;
   color: string;
+  textColor?: string;
   fill: string;
+  fillOpacity?: number;
   size: number;
+  fontFamily?: FontFamily;
   step: number;
   animation: (typeof entranceAnimations)[number];
   animationMs?: number;
@@ -70,12 +80,15 @@ export type Scene = {
   id: string;
   name: string;
   description: string;
+  subtitle?: string;
   items: Item[];
   duration: number;
   transition?: Transition;
   transitionMs?: number;
 };
 export type Board = { version: 1; title: string; scenes: Scene[] };
+export const defaultSectionSubtitle =
+  "Um orquestrador conecta as peças. Cada agente faz o que sabe melhor.";
 export const colors = [
   "#e2e9e2",
   "#8fe3b5",
@@ -167,6 +180,7 @@ function overview(): Scene {
     id: uid(),
     name: "Visão geral",
     description: "Uma equipe. Muitas possibilidades.",
+    subtitle: defaultSectionSubtitle,
     duration: 6,
     items: [
       ...arrows,
@@ -192,6 +206,7 @@ function flow(
     id: uid(),
     name,
     description: desc,
+    subtitle: "",
     duration: 5,
     items: [
       ...nodes.slice(1).map((n, i) => ({
@@ -301,6 +316,7 @@ export function validBoard(d: unknown): d is Board {
         typeof s.id === "string" &&
         typeof s.name === "string" &&
         typeof s.description === "string" &&
+        (s.subtitle === undefined || typeof s.subtitle === "string") &&
         Number.isFinite(s.duration) &&
         s.duration >= 2 &&
         s.duration <= 30 &&
@@ -376,7 +392,13 @@ export function validBoard(d: unknown): d is Board {
             ) &&
             typeof i.text === "string" &&
             typeof i.color === "string" &&
+            (i.textColor === undefined || typeof i.textColor === "string") &&
             typeof i.fill === "string" &&
+            (i.fillOpacity === undefined ||
+              (Number.isFinite(i.fillOpacity) &&
+                i.fillOpacity >= 0 &&
+                i.fillOpacity <= 1)) &&
+            (i.fontFamily === undefined || fontFamilies.includes(i.fontFamily)) &&
             (!i.points ||
               (Array.isArray(i.points) &&
                 i.points.every(

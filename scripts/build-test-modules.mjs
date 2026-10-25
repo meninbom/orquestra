@@ -16,3 +16,12 @@ await build({
   outfile: ".qa/selection.cjs",
   target: "node22",
 });
+
+await build({
+  entryPoints: ["src/model.ts"],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  outfile: ".qa/model.cjs",
+  target: "node22",
+});
