@@ -1,7 +1,11 @@
 import { type Scene, type Item, colors } from "./model";
-import { arrowGeometry, frameTitleHeight, itemBounds } from "./selection";
+import { arrowGeometry, frameTitleHeight } from "./selection";
 import { iconByName } from "./icons";
 import { wrapItemText } from "./textLayout";
+import { sceneHeadingLayout, sceneHeadingLineHeight, sceneHeadingText, sceneHeadingUnderlinePath, sceneSubtitleUnderlinePath, wrapHeadingText } from "./sectionHeadingLayout";
+import { measureHeadingWidth } from "./headingMetrics";
+import { sceneRenderBounds } from "./sceneBounds";
+import { normalizePreviewLink } from "./previewLink";
 
 const fontStacks: Record<NonNullable<Item["fontFamily"]>, string> = {
   Caveat: '"Caveat", cursive', "DM Sans": '"DM Sans", sans-serif', Georgia: "Georgia, serif", monospace: "monospace",
@@ -11,14 +15,8 @@ const fontStacks: Record<NonNullable<Item["fontFamily"]>, string> = {
   Consolas: "Consolas, monospace", "Courier New": '"Courier New", monospace', "Comic Sans MS": '"Comic Sans MS", cursive',
   "Segoe Print": '"Segoe Print", cursive', "Segoe Script": '"Segoe Script", cursive', Impact: "Impact, sans-serif",
 };
-const canvasMeasure = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
 const measureText = (text: string, font: string) => {
-  if (canvasMeasure) {
-    canvasMeasure.font = font;
-    return canvasMeasure.measureText(text).width;
-  }
-  const size = Number(font.match(/(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|$)/)?.[1] || 16);
-  return [...text].length * size * 0.55;
+  return measureHeadingWidth(text, font);
 };
 const textColor = (item: Item) => item.textColor ?? (item.type === "note" ? "#19342a" : item.color);
 const mappedColor = (color: string, light: boolean) => light ? ({
@@ -29,11 +27,8 @@ const markerId = (color: string) => `arrow-${[...color].map((character) => chara
 type Props = { scene: Scene; index: number; light: boolean; images: Record<string, string>; embeddedFonts: string };
 export function StaticScene({ scene, index, light, images, embeddedFonts }: Props) {
   const visible = scene.items.filter((item) => !item.hidden && !(item.type === "arrow" && scene.items.some((target) => target.hidden && (target.id === item.from || target.id === item.to))));
-  const boxes = visible.map((item) => itemBounds(item, scene.items));
-  const minX = Math.min(0, ...boxes.map((box) => box.x - 30));
-  const minY = Math.min(-10, ...boxes.map((box) => box.y - 30));
-  const maxX = Math.max(1140, ...boxes.map((box) => box.x + box.w + 30));
-  const maxY = Math.max(825, ...boxes.map((box) => box.y + box.h + 30));
+  const bounds = sceneRenderBounds(scene, index);
+  const { x: minX, y: minY, w: frameWidth, h: frameHeight } = bounds;
   const bg = light ? "#f4f7f3" : "#0c1412";
   const drawItem = (item: Item) => {
     const color = mappedColor(item.color, light);
@@ -92,17 +87,32 @@ export function StaticScene({ scene, index, light, images, embeddedFonts }: Prop
     );
   };
   const sceneSubtitle = scene.subtitle ?? (index === 0 ? "Um orquestrador conecta as peças. Cada agente faz o que sabe melhor." : "");
+  const renderHeading = (field: "name" | "description" | "subtitle") => {
+    const layout = sceneHeadingLayout(scene, field);
+    const text = sceneHeadingText(scene, field, index);
+    const family = field === "name" ? "DM Sans, sans-serif" : "Caveat, cursive";
+    const letterSpacing = field === "name" ? 2 * layout.fontSize / 12 : 0;
+    const lines = wrapHeadingText(text, layout.width, layout.fontSize, measureText, family, letterSpacing);
+    const anchor = layout.align === "center" ? "middle" : layout.align === "right" ? "end" : "start";
+    const x = layout.align === "center" ? layout.x + layout.width / 2 : layout.align === "right" ? layout.x + layout.width : layout.x;
+    return <text key={field} x={x} y={layout.y + layout.fontSize} textAnchor={anchor} fill={field === "name" ? mappedColor(colors[1], light) : mappedColor(colors[0], light)} fontFamily={family} fontSize={layout.fontSize} fontWeight="500" letterSpacing={letterSpacing}>
+      {lines.map((line, n) => <tspan key={n} x={x} dy={n ? layout.fontSize * sceneHeadingLineHeight(field) : 0}>{line}</tspan>)}
+    </text>;
+  };
   const arrowColors = [...new Set(visible.filter((item) => item.type === "arrow").map((item) => item.color))];
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" width="1140" height="825" viewBox={`${minX} ${minY} ${maxX - minX} ${maxY - minY}`}>
+    <svg xmlns="http://www.w3.org/2000/svg" width="1140" height="825" viewBox={`${minX} ${minY} ${frameWidth} ${frameHeight}`}>
       <style>{embeddedFonts}</style>
       <defs>{arrowColors.map((color) => <marker key={color} id={markerId(color)} viewBox="0 0 12 12" markerWidth="9" markerHeight="9" refX="10" refY="6" orient="auto-start-reverse"><path d="M2 2 10 6 2 10" fill="none" stroke={mappedColor(color, light)} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></marker>)}</defs>
-      <rect x={minX} y={minY} width={maxX - minX} height={maxY - minY} fill={bg} />
+      <rect x={minX} y={minY} width={frameWidth} height={frameHeight} fill={bg} />
       <g>
-        <text x="40" y="42" fill={mappedColor(colors[1], light)} fontFamily="DM Sans, sans-serif" fontSize="12" letterSpacing="2">{String(index + 1).padStart(2, "0")} / {scene.name.toLocaleUpperCase("pt-BR")}</text>
-        <path d="M40 44 Q105 47 176 43" fill="none" stroke={mappedColor(colors[1], light)} strokeWidth="1.3" />
-        <text x="570" y="103" textAnchor="middle" fill={mappedColor(colors[0], light)} fontFamily="Caveat, cursive" fontSize="59" fontWeight="500">{scene.description}</text>
-        {!!sceneSubtitle && <><path d="M545 116 Q760 108 1020 117" fill="none" stroke={mappedColor(colors[1], light)} strokeWidth="2.5" /><text x="570" y="150" textAnchor="middle" fill={mappedColor(colors[0], light)} fontFamily="Caveat, cursive" fontSize="23">{sceneSubtitle}</text></>}
+        {renderHeading("name")}
+        <path d={sceneHeadingUnderlinePath(scene, index, wrapHeadingText(sceneHeadingText(scene, "name", index), sceneHeadingLayout(scene, "name").width, sceneHeadingLayout(scene, "name").fontSize, measureText, "DM Sans, sans-serif", 2 * sceneHeadingLayout(scene, "name").fontSize / 12))} fill="none" stroke={mappedColor(colors[1], light)} strokeWidth="1.3" />
+        {renderHeading("description")}
+        {sceneSubtitle !== "" && <>
+          <path d={sceneSubtitleUnderlinePath(scene)} fill="none" stroke={mappedColor(colors[1], light)} strokeWidth="2.5" />
+          {renderHeading("subtitle")}
+        </>}
         {visible.map(drawItem)}
       </g>
     </svg>
@@ -112,5 +122,20 @@ export function StaticScene({ scene, index, light, images, embeddedFonts }: Prop
 function staticCard(item: Item, color: string, light: boolean) {
   const title = item.assetName || item.text || item.url || "Mídia";
   const background = light ? "#e0ebe1" : "#162c23";
+  if (item.type === "link" && item.url) {
+    try {
+      const target = normalizePreviewLink(item.url);
+      if (target.kind === "youtube") return <g key={item.id} data-youtube-card="true">
+        <rect x={item.x} y={item.y} width={item.w} height={item.h} rx="16" fill="#101010" stroke={color} />
+        <rect x={item.x + 1} y={item.y + 1} width={Math.max(0, item.w - 2)} height={Math.min(58, item.h * 0.28)} rx="15" fill="#171717" />
+        <circle cx={item.x + 35} cy={item.y + Math.min(32, item.h * 0.15)} r="17" fill="#e62117" />
+        <path d={`M ${item.x + 31} ${item.y + Math.min(23, item.h * .15)} l 13 9 -13 9 z`} fill="white" />
+        <text x={item.x + 64} y={item.y + Math.min(30, item.h * .15) + 5} fill="white" fontFamily="DM Sans, sans-serif" fontSize="16" fontWeight="700">{(item.text || "Vídeo do YouTube").slice(0, 60)}</text>
+        <text x={item.x + 18} y={item.y + Math.max(82, item.h * .72)} fill="#eeeeee" fontFamily="DM Sans, sans-serif" fontSize="13">▶</text>
+        <text x={item.x + 42} y={item.y + Math.max(82, item.h * .72)} fill="#eeeeee" fontFamily="DM Sans, sans-serif" fontSize="13">Reproduzir no YouTube</text>
+        <text x={item.x + 18} y={item.y + item.h - 14} fill="#bbbbbb" fontFamily="DM Sans, sans-serif" fontSize="10">{target.originalUrl}</text>
+      </g>;
+    } catch {}
+  }
   return <g key={item.id}><rect x={item.x} y={item.y} width={item.w} height={item.h} rx="10" fill={background} stroke={color} /><text x={item.x + 18} y={item.y + 36} fill={mappedColor(item.textColor ?? color, light)} fontFamily="DM Sans, sans-serif" fontSize="20">{title.slice(0, 80)}</text><text x={item.x + 18} y={item.y + 62} fill={mappedColor(item.textColor ?? color, light)} fontFamily="DM Sans, sans-serif" fontSize="12">{item.type === "link" ? item.url || "Link" : item.type === "video" ? "Vídeo" : item.type === "audio" ? "Áudio" : "Arquivo anexado"}</text></g>;
 }

@@ -7,9 +7,11 @@ import {
   Loader2,
   AlertCircle,
   Eye,
+  Play,
 } from "lucide-react";
 import { type Item } from "./model";
 import { getAsset, openLink, saveAsset } from "./media";
+import { normalizePreviewLink } from "./previewLink";
 export function BoardMedia({
   item,
   interactive,
@@ -17,6 +19,9 @@ export function BoardMedia({
   color,
   onOpenPdf,
   onOpenLink,
+  selected = false,
+  youtubeActive = false,
+  onStartYoutube,
 }: {
   item: Item;
   interactive: boolean;
@@ -24,10 +29,20 @@ export function BoardMedia({
   color: string;
   onOpenPdf: (id: string) => void;
   onOpenLink: () => void;
+  selected?: boolean;
+  youtubeActive?: boolean;
+  onStartYoutube?: () => void;
 }) {
   const [url, setUrl] = useState(""),
     [error, setError] = useState("");
   const media = useRef<HTMLMediaElement | null>(null);
+  let youtubeTarget: ReturnType<typeof normalizePreviewLink> | null = null;
+  if (item.type === "link" && item.url) {
+    try {
+      const target = normalizePreviewLink(item.url);
+      if (target.kind === "youtube") youtubeTarget = target;
+    } catch {}
+  }
   const isPdf = item.type === "file" &&
     ((item.assetMime || "").toLowerCase().includes("pdf") || item.assetName?.toLowerCase().endsWith(".pdf"));
   useEffect(() => {
@@ -80,6 +95,27 @@ export function BoardMedia({
         onError={failed}
       />
     );
+  if (youtubeTarget?.kind === "youtube")
+    return <foreignObject data-media-snapshot="true" data-youtube-item={item.id} x={item.x} y={item.y} width={item.w} height={item.h}>
+      <div className={`board-media media-youtube-inline ${selected ? "is-selected" : ""} ${youtubeActive ? "is-playing" : ""}`} data-media-control="true" style={{ width: "100%", height: "100%", color, borderColor: color + "70", pointerEvents: "auto" }}>
+        {youtubeActive ? <iframe
+          className="youtube-board-player"
+          data-youtube-player={item.id}
+          src={youtubeTarget.iframeUrl}
+          title={`Player do YouTube: ${item.text || "Vídeo"}`}
+          sandbox="allow-scripts allow-forms allow-same-origin allow-presentation"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; fullscreen; gyroscope; picture-in-picture; web-share"
+          allowFullScreen
+          referrerPolicy="strict-origin-when-cross-origin"
+        /> : <div className="youtube-board-thumbnail">
+          <div className="youtube-board-title"><strong>{item.text || "Vídeo do YouTube"}</strong><span>YouTube · player integrado</span></div>
+          <button type="button" aria-label="Reproduzir vídeo no canvas" onPointerDown={(event) => event.stopPropagation()} onClick={onStartYoutube}>
+            <Play size={26} fill="currentColor" />
+          </button>
+          <div className="youtube-board-footer"><span>▶</span><span>Assista no YouTube</span></div>
+        </div>}
+      </div>
+    </foreignObject>;
   return (
     <foreignObject
       data-media-snapshot="true"

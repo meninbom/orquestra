@@ -1,14 +1,14 @@
 # Orquestra
 
-Whiteboard local para desenhar e apresentar explicações sobre orquestração de agentes. React, TypeScript, Vite e aplicativo Windows com Electron, sem backend ou chaves de API. O código-fonte está na versão **1.5.0**.
+Whiteboard local para desenhar e apresentar explicações sobre orquestração de agentes. React, TypeScript, Vite e aplicativo Windows com Electron, sem backend ou chaves de API. O código-fonte está na versão **1.6.0**.
 
 ## Windows
 
-O instalador Windows é gerado em `release/Orquestra-Setup-1.5.0-x64.exe`, com hashes em `release/SHA256SUMS.txt`. A instalação é por usuário, cria atalhos na Área de Trabalho e no menu Iniciar e não requer servidor Vite. O executável empacotado fica em `release/win-unpacked/Orquestra.exe`; mantenha a pasta inteira caso use essa versão.
+O instalador Windows desta versão está em `release/Orquestra-Setup-1.6.0-x64.exe`. A instalação é por usuário, cria atalhos na Área de Trabalho e no menu Iniciar e não requer servidor Vite. O executável empacotado fica em `release/win-unpacked/Orquestra.exe`; mantenha a pasta inteira caso use essa versão. O assistente NSIS não foi executado nesta entrega, então a biblioteca em `%APPDATA%\Orquestra` permanece como estava.
 
 A biblioteca é gravada em `%APPDATA%\Orquestra\biblioteca.json`, com a versão anterior em `biblioteca.json.bak`. Em **Projetos → Abrir pasta de dados** é possível localizar os arquivos. As gravações são serializadas e usam um arquivo temporário antes da substituição; o fechamento normal aguarda a gravação da última edição. A desinstalação preserva os dados. O instalador desta versão não tem assinatura digital.
 
-A versão 1.5.0 foi validada no executável empacotado e na instalação Windows, com perfis temporários: regressão completa, reprodução real do YouTube, leitor PDF e seus estados de erro, exportações, conexões, frames e recursos anteriores. A substituição preservou a biblioteca real e os hashes do executável/ASAR conferiram com o build.
+A versão 1.6.0 foi validada no executável empacotado `release/win-unpacked/Orquestra.exe`, com perfil temporário: regressão completa, player YouTube inline, leitor PDF e seus estados de erro, exportações sem auxiliares de edição, conexões, frames e recursos anteriores. A reprodução real do YouTube (`ORQUESTRA_TEST_YOUTUBE_PLAYBACK=1`) foi confirmada na versão-fonte em Electron, não repetida neste executável.
 
 Para levar projetos do navegador ao Windows, use **Projetos → Backup da biblioteca** no navegador e **Projetos → Importar projetos** no aplicativo. Também é possível importar os antigos arquivos de quadro JSON.
 
@@ -25,7 +25,7 @@ $env:ORQUESTRA_TEST_EXE="release/win-unpacked/Orquestra.exe"; $env:ORQUESTRA_TES
 $env:ORQUESTRA_TEST_YOUTUBE_PLAYBACK="1"; node scripts/test-packaged.mjs # exige rede e confirma playback real no YouTube
 $env:ORQUESTRA_TEST_SOURCE="1"; node scripts/test-customization.mjs # fluxo de preservação da UI no Electron de desenvolvimento
 $env:ORQUESTRA_TEST_SOURCE="1"; node scripts/test-packaged.mjs # regressão de UI Electron + PDF/conexões/frames, perfil temporário
-$env:ORQUESTRA_TEST_SOURCE="1"; $env:ORQUESTRA_TEST_PDF_ONLY="1"; node scripts/test-packaged.mjs # somente aceitação 1.5.0, perfil temporário
+$env:ORQUESTRA_TEST_SOURCE="1"; $env:ORQUESTRA_TEST_PDF_ONLY="1"; node scripts/test-packaged.mjs # aceitação PDF/conexões/frames, perfil temporário
 ```
 
 ## Projetos
@@ -70,7 +70,7 @@ Use **U** ou o botão de imagem para inserir arquivos. Aceita PNG, JPG, WebP, GI
 
 Também é possível arrastar arquivos para o canvas e colar imagens do clipboard. Imagens e GIFs aparecem diretamente; dê **duplo clique** em vídeo, áudio, anexo ou link para interagir. Durante a apresentação, os controles de mídia ficam ativos. No painel Estilo, ajuste posição X/Y, largura, altura, ordem das camadas e modo de recorte da imagem/vídeo. Vídeos e áudio podem repetir, iniciar ao serem revelados e ficar sem som.
 
-A aba **Link** cria cartões de referências HTTPS, inclusive YouTube. **Pré-visualizar** abre páginas em um iframe com sandbox; **Abrir no navegador** continua disponível para sites que bloqueiam incorporação. Para YouTube, o player só carrega após **Reproduzir vídeo**. A prévia pode ser ampliada; Escape sai da ampliação e, em seguida, fecha o modal. O endereço original do cartão permanece salvo no projeto. Para manter conteúdo de vídeo disponível offline, importe o arquivo local. Consulte [o plano e as evidências de QA do Link Preview](design/PLANO-LINK-PREVIEW.md).
+A aba **Link** cria cartões de referências HTTPS, inclusive YouTube. Páginas comuns mantêm a prévia modal em iframe com sandbox; **Abrir no navegador** continua disponível para sites que bloqueiam incorporação. Links do YouTube viram um player 16:9 selecionável no canvas: a barra contextual permite editar o endereço, abrir externamente e ativar/desativar a reprodução. O iframe só é criado após uma ação explícita; Escape, clique fora ou o botão de saída encerra a interação, e o resize pausa o player. O endereço/título do cartão permanecem no projeto. Para manter conteúdo de vídeo disponível offline, importe o arquivo local. Consulte [o plano e as evidências de QA do Link Preview](design/PLANO-LINK-PREVIEW.md).
 
 No Windows, os arquivos ficam na subpasta `media` dos dados do aplicativo. No navegador, ficam no IndexedDB. O projeto guarda as referências; os backups JSON de projeto e biblioteca incorporam os arquivos utilizados, permitindo transportar o trabalho. A importação recria identidades de mídia, preservando os arquivos existentes. O limite de mídia por backup é **200 MB**. Arquivos guardados permanecem no repositório local mesmo após remoção de um elemento, preservando referências usadas no histórico; o backup inclui apenas arquivos efetivamente referenciados pelos projetos exportados.
 
@@ -93,7 +93,7 @@ O painel **Estilo** tem cores independentes de borda, texto e preenchimento, tra
 - Canvas com pan, zoom e enquadramento dos elementos.
 - Seleção múltipla por Shift + clique ou arraste em uma área vazia.
 - Retângulos, elipses, molduras com título próprio no topo, notas, texto, desenho livre e blocos de agentes. O título do frame é editável pelo painel Estilo ou por duplo clique no texto; deixe o campo vazio para ocultá-lo.
-- Conectores com portas norte/leste/sul/oeste aparecem nos elementos selecionados ou sob interação. Arraste uma porta para criar uma seta, ou arraste uma extremidade para reconectar ou soltar; o destaque mostra o destino antes de soltar. Conectores acompanham movimento e redimensionamento e podem ser desfeitos/refeitos.
+- Conectores com portas norte/leste/sul/oeste aparecem nos elementos selecionados ou sob interação. Arraste uma porta para criar uma seta; para reconectar, arraste uma extremidade ou clique nela e depois numa porta específica. O modo mostra os destinos elegíveis, exclui o outro extremo e oferece prévia encaixada. Escape cancela; reconexões/desconexões são uma operação de undo. Conectores acompanham movimento e redimensionamento.
 - Duplo clique edita o texto. A alça inferior direita redimensiona elementos.
 - Cores, preenchimento, tamanho de texto, animação e etapa no painel Estilo.
 - Histórico de até 80 alterações, duplicação e exclusão.
@@ -103,7 +103,9 @@ O painel **Estilo** tem cores independentes de borda, texto e preenchimento, tra
 
 ## Organização, texto e versões
 
-No painel **Estilo**, selecione dois ou mais elementos para alinhar pelas bordas ou centros e distribuir horizontal/verticalmente. Use **Ctrl+G** para formar um grupo persistente e **Ctrl+Shift+G** para desfazê-lo. **Configurações do board** permite ligar encaixe na grade e guias de alinhamento; segurar **Alt** durante o arraste suspende os encaixes. A tolerância das guias é definida em pixels de tela, portanto acompanha o zoom.
+No painel **Estilo**, selecione dois ou mais elementos para alinhar, distribuir ou redimensionar juntos pelas oito alças da seleção. Cantos mantêm proporção; Shift e Alt ajustam a operação. A seleção não precisa ser agrupada, e grupos/bloqueios são respeitados. Use **Ctrl+G** para formar um grupo persistente e **Ctrl+Shift+G** para desfazê-lo. **Configurações do board** permite ligar encaixe na grade e guias de alinhamento; segurar **Alt** durante o arraste suspende os encaixes. A tolerância das guias é definida em pixels de tela, portanto acompanha o zoom.
+
+Na aba **Seções**, os campos semânticos de nome, título e subtítulo também podem ser selecionados e movidos diretamente no canvas. A alça redimensiona largura e fonte; o painel oferece X/Y, largura, tamanho, alinhamento e restauração por campo ou em conjunto. O subtítulo vazio continua vazio, mas pode ser editado pelo painel. O layout é opcional e boards antigos preservam as posições originais; SVG/PNG/PDF e cartões estáticos compartilham esse layout.
 
 A aba **Camadas** permite selecionar, nomear, reordenar, ocultar e bloquear elementos. A visibilidade e o bloqueio de um grupo valem para seus membros; camadas ocultas não aparecem na exportação. Itens ocultos e bloqueados continuam recuperáveis pelo painel. Textos têm controles de negrito, itálico, alinhamento e entrelinha; textos novos ajustam a altura automaticamente e essa opção pode ser alterada no painel **Estilo**.
 
@@ -113,7 +115,9 @@ Em **Projetos**, abra o relógio do projeto para criar versões manuais, consult
 
 **Exportar board inteiro (.pdf)** gera uma página A4 horizontal por seção, na ordem do projeto, sem depender da etapa de apresentação. O Electron usa a impressão para arquivo; no navegador, a janela de impressão oferece **Salvar como PDF**. Conteúdo de vídeo, áudio, links e anexos usa representação estática.
 
-Na versão **1.5.0**, `npm test` cobre 55 casos de modelo, geometria, conectores, frames, grupos, estilos, mídia, versões, seleção e persistência sob bloqueios temporários do Windows. O fluxo de aceitação Electron verifica seleção em 800 × 600 com o painel aberto/fechado, conexões a 48% e 207%, criação/cancelamento/reconexão/desconexão, movimento/redimensionamento nos dois extremos, undo/redo, título de moldura e PDF local de três páginas, incluindo exportação SVG/PDF, arquivo ausente/corrompido e senha incorreta/correta. O fluxo de links confere abertura por botão/duplo clique, sandbox, fallback, foco, ampliação, preservação do board e URLs; a opção de playback verifica vídeo real no YouTube. As capturas e relatórios ficam em `.qa/`; os testes usam perfis temporários isolados. O worker PDF.js é preparado localmente a partir de `pdfjs-dist` (Apache-2.0), junto das licenças de fontes e decoders. O build avisa que o bundle JavaScript minificado excede 500 kB. O fluxo desktop exporta um PDF real de três seções para `.qa/board-acceptance.pdf`; a inspeção visual foi feita nas três páginas e na interface de 800 × 600. A impressão pelo navegador foi conferida até a chamada do diálogo, cuja escolha de destino é manual.
+SVG, PNG, PDF e **Enquadrar seção** usam os mesmos limites de conteúdo. Eles incluem itens visíveis, conectores, títulos com quebra real de linha, sublinhados e o ornamento do subtítulo, mesmo fora do retângulo padrão; a moldura mínima continua 1140 × 825 com margem de 30 px. Todas as alças, guias, portas e caixas de seleção são removidas das exportações, preservando textos, setas e imagens embutidas.
+
+Na versão-fonte **1.6.0**, `npm test` cobre 60 casos, incluindo contratos de portas, transformações múltiplas (âncoras cruzadas, mínimo por eixo, Shift/Alt e `autoHeight`), layouts semânticos, limites compartilhados de exportação e compatibilidade dos boards antigos. O fluxo Electron de desenvolvimento (`ORQUESTRA_TEST_SOURCE=1`) foi executado com perfil temporário: verifica UI a 800 × 600, gestos reais de seleção/redimensionamento/undo/redo/cancelamento, seções e conexões a 48% e 207%, exportações SVG/PNG/PDF com seleção coletiva, cabeçalho e modo de ponta ativos, mídia/PDF e a regressão do Link Preview comum. A exportação SVG real não contém auxiliares de edição e preserva a imagem embutida; o PNG real foi decodificado e teve 327.600 pixels amostrados pintados; o PDF real contém a moldura SVG completa, o sublinhado fora do canvas, o operador de imagem e o nome da seção em DM Sans. A extração de texto do PDF é parcial para as fontes de manuscrito/subconjunto, por isso o teste confere o nome completo e os inícios do título/subtítulo, não todas as palavras; SVG e PNG mantêm o texto inteiro. O fluxo YouTube confirma o iframe inline, URL/contexto, cabeçalho `Referer`, encerramento/pausa e erros de runtime. Com `ORQUESTRA_TEST_YOUTUBE_PLAYBACK=1`, o teste separado consulta o vídeo no frame Electron e só passa quando `readyState >= 2`, `paused === false` e `currentTime` avança pelo menos 0,5 s entre leituras. Evidências e capturas ficam em `.qa/`, incluindo `packaged-smoke.json`, `pdf-connections-frames-flow.json`, `link-preview-flow.json`, `export-active-collective.svg`, `export-active-collective.png`, `export-active-endpoint.svg`, `export-expanded-board.pdf`, telas 800 × 600 e os estados do player/cabeçalhos. O mesmo fluxo, sem playback real do YouTube, passou depois no executável empacotado `release/win-unpacked/Orquestra.exe`. O instalador NSIS 1.6.0 foi gerado; o assistente de instalação não foi executado. O build avisa que o bundle JavaScript minificado excede 500 kB.
 
 ## Apresentação
 

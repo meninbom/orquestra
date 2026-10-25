@@ -56,6 +56,8 @@ import {
   uid,
   type ArrowPort,
   type Transition,
+  type SceneHeadingField,
+  type SceneHeadingFieldLayout,
 } from "./model";
 import {
   type BoardTemplate,
@@ -66,6 +68,8 @@ import {
 import { InsertPanel } from "./InsertPanel";
 import { iconByName, iconCatalog } from "./icons";
 import { BoardMedia } from "./BoardMedia";
+import { SectionHeadings } from "./SectionHeadings";
+import { YouTubeBoardControls } from "./YouTubeBoardControls";
 import { PdfViewer } from "./PdfViewer";
 import { LinkPreview } from "./LinkPreview.tsx";
 import { ArrowVisual } from "./ArrowVisual";
@@ -79,6 +83,7 @@ import {
   portablePayload,
   importPayload,
   openLink,
+  safeLink,
 } from "./media";
 import { readLibrary, writeLibrary } from "./persistence";
 import { ProjectManager } from "./ProjectManager";
@@ -107,8 +112,14 @@ import { applySavedStyle, styleProperties } from "./styles";
 import { builtInTemplates, insertTemplateScene, saveSceneAsTemplate } from "./templates";
 import { autoHeightFor, wrapItemText } from "./textLayout";
 import { makeProjectVersion, type ProjectVersion, validProjectVersion } from "./versions";
+import { connectionPortAt, connectionPortTargets as getConnectionPortTargets } from "./connectionTargets";
+import { canTransformSelection, resizeSelectionFromSnapshot, resizeSelectionToAxisBounds, type SelectionResizeHandle } from "./selectionTransform";
+import { patchSceneHeadingLayout, resetSceneHeadingLayout, sceneHeadingBounds, sceneHeadingLayout } from "./sectionHeadingLayout";
+import { sceneRenderBounds } from "./sceneBounds";
+import { setSceneSvgExportFrame, stripSvgEditorHelpers } from "./svgExport";
 import { persistProjectVersion, listProjectVersions } from "./versionStorage";
 import { VersionManager } from "./VersionManager";
+import { normalizePreviewLink } from "./previewLink";
 import { LayerPanel } from "./LayerPanel";
 import { ConfirmDialog, NameDialog } from "./ActionDialog";
 import "./style.css";
@@ -185,8 +196,8 @@ function withAutoHeight(item: Item, values: Partial<Item>): Item {
 }
 
 type ConnectorPreview =
-  | { kind: "create"; fromId: string; fromPort: ArrowPort; start: { x: number; y: number }; point: { x: number; y: number }; targetId?: string }
-  | { kind: "endpoint"; arrowId: string; endpoint: "from" | "to"; point: { x: number; y: number }; targetId?: string };
+  | { kind: "create"; fromId: string; fromPort: ArrowPort; start: { x: number; y: number }; point: { x: number; y: number }; targetId?: string; targetPort?: ArrowPort }
+  | { kind: "endpoint"; arrowId: string; endpoint: "from" | "to"; point: { x: number; y: number }; targetId?: string; targetPort?: ArrowPort };
 
 function App({ initial }: { initial: Library }) {
   const [library, setLibrary] = useState<Library>(initial);
@@ -216,10 +227,12 @@ function App({ initial }: { initial: Library }) {
   const [versionProjectId, setVersionProjectId] = useState<string | null>(null);
   const [alignmentGuides, setAlignmentGuides] = useState<Guide[]>([]);
   const [connectorPreview, setConnectorPreview] = useState<ConnectorPreview | null>(null);
+  const [connectionEdit, setConnectionEdit] = useState<{ arrowId: string; endpoint: "from" | "to" } | null>(null);
   const [hoveredConnectorItem, setHoveredConnectorItem] = useState<string | null>(null);
   const [templateChoice, setTemplateChoice] = useState("");
   const [pdfPreview, setPdfPreview] = useState<{ assetId: string; name: string } | null>(null);
   const [linkPreview, setLinkPreview] = useState<{ url: string; title: string } | null>(null);
+  const [youtubePlaybackId, setYoutubePlaybackId] = useState<string | null>(null);
   const initialTemplates = useRef(builtInTemplates()).current;
   const templates = [...initialTemplates, ...(library.templates || [])];
   const [insertTab, setInsertTab] = useState<string | null>(null),
@@ -232,6 +245,8 @@ function App({ initial }: { initial: Library }) {
   }>({ kind: "fade", ms: 500 });
   const [saveError, setSaveError] = useState(false);
   const [marquee, setMarquee] = useState<Bounds | null>(null);
+  const [selectedHeading, setSelectedHeading] = useState<SceneHeadingField | null>(null);
+  const [headingPanelField, setHeadingPanelField] = useState<SceneHeadingField>("description");
   const clipboardCount = useRef({ key: "", count: 0 });
   const [sceneId, setSceneId] = useState(""),
     [tool, setTool] = useState<Tool>("select"),
@@ -326,6 +341,16 @@ function App({ initial }: { initial: Library }) {
         : ids.filter((id) => presentIds.has(id)),
     );
   }, [scene.id, scene.items]);
+  useEffect(() => {
+    if (connectionEdit && (!selected.includes(connectionEdit.arrowId) || !scene.items.some((item) => item.id === connectionEdit.arrowId && item.type === "arrow"))) {
+      setConnectionEdit(null);
+      setConnectorPreview(null);
+    }
+  }, [connectionEdit, selected, scene.id, scene.items]);
+  useEffect(() => {
+    if (youtubePlaybackId && (selected.length !== 1 || !selected.includes(youtubePlaybackId) || !scene.items.some((item) => item.id === youtubePlaybackId && item.type === "link")))
+      setYoutubePlaybackId(null);
+  }, [youtubePlaybackId, selected, scene.id, scene.items]);
   useEffect(() => {
     try {
       localStorage.setItem("orquestra-theme", light ? "light" : "dark");
@@ -499,6 +524,10 @@ function App({ initial }: { initial: Library }) {
     setPlaying(false);
     setStep(0);
     setInteractId(null);
+    setYoutubePlaybackId(null);
+    setConnectionEdit(null);
+    setConnectorPreview(null);
+    setSelectedHeading(null);
     setPreviewMotion(false);
     setTransition({
       kind: library.settings?.projectTransition || "zoom",
@@ -521,6 +550,8 @@ function App({ initial }: { initial: Library }) {
     checkpoint();
     updateScene(fn);
   };
+  const setHeadingLayout = (field: SceneHeadingField, values: Partial<SceneHeadingFieldLayout>) =>
+    updateScene((current) => patchSceneHeadingLayout(current, field, values));
   const changeBoardSettings = (settings: Partial<NonNullable<Board["settings"]>>) => {
     checkpoint();
     setBoard((current) => ({ ...current, settings: { ...current.settings, ...settings } }));
@@ -573,31 +604,19 @@ function App({ initial }: { initial: Library }) {
   const fit = useCallback(() => {
     const el = canvasRef.current;
     if (!el) return;
-    const items = sceneRef.current?.items || [];
-    const bounds = items
-      .filter((i) => i.type !== "arrow" && !i.hidden)
-      .map((i) =>
-        i.type === "pen" && i.points?.length
-          ? {
-              x: Math.min(...i.points.map((p) => p[0])) + i.x,
-              y: Math.min(...i.points.map((p) => p[1])) + i.y,
-              r: Math.max(...i.points.map((p) => p[0])) + i.x,
-              b: Math.max(...i.points.map((p) => p[1])) + i.y,
-            }
-          : { x: i.x, y: i.y, r: i.x + i.w, b: i.y + i.h },
-      );
-    const minX = Math.min(0, ...bounds.map((i) => i.x)),
-      minY = Math.min(0, ...bounds.map((i) => i.y)),
-      w = Math.max(1140, ...bounds.map((i) => i.r)) - minX,
-      h = Math.max(850, ...bounds.map((i) => i.b)) - minY;
+    const current = sceneRef.current;
+    if (!current) return;
+    const board = boardRef.current;
+    const index = Math.max(0, board.scenes.findIndex((candidate) => candidate.id === current.id));
+    const frame = sceneRenderBounds(current, index);
     const z = Math.max(
       0.15,
-      Math.min((el.clientWidth - 100) / w, (el.clientHeight - 80) / h, 1.4),
+      Math.min((el.clientWidth - 100) / frame.w, (el.clientHeight - 80) / frame.h, 1.4),
     );
     setSmooth(true);
     setView({
-      x: (el.clientWidth - w * z) / 2 - minX * z,
-      y: (el.clientHeight - h * z) / 2 - minY * z,
+      x: (el.clientWidth - frame.w * z) / 2 - frame.x * z,
+      y: (el.clientHeight - frame.h * z) / 2 - frame.y * z,
       z,
     });
     setTimeout(() => setSmooth(false), 550);
@@ -621,10 +640,14 @@ function App({ initial }: { initial: Library }) {
       ms: next.transitionMs || 500,
     });
     setInteractId(null);
+    setYoutubePlaybackId(null);
+    setConnectionEdit(null);
+    setConnectorPreview(null);
     gesture.current = null;
     setMarquee(null);
     setSceneId(next.id);
     setSelected([]);
+    setSelectedHeading(null);
     setEditing(null);
     setEditingSceneField(null);
     setStep(0);
@@ -650,6 +673,10 @@ function App({ initial }: { initial: Library }) {
     setPresent(true);
     setStep(0);
     setSelected([]);
+    setSelectedHeading(null);
+    setConnectionEdit(null);
+    setConnectorPreview(null);
+    setYoutubePlaybackId(null);
     setPlaying(false);
     setEditing(null);
     fit();
@@ -868,6 +895,22 @@ function App({ initial }: { initial: Library }) {
           cancelGesture();
           return;
         }
+        if (connectionEdit) {
+          e.preventDefault();
+          setConnectionEdit(null);
+          setConnectorPreview(null);
+          return;
+        }
+        if (youtubePlaybackId) {
+          e.preventDefault();
+          setYoutubePlaybackId(null);
+          return;
+        }
+        if (selectedHeading) {
+          e.preventDefault();
+          setSelectedHeading(null);
+          return;
+        }
         setPresent(false);
         setPlaying(false);
         setSelected([]);
@@ -875,6 +918,7 @@ function App({ initial }: { initial: Library }) {
         setHelp(false);
         setExports(false);
         setInteractId(null);
+        setYoutubePlaybackId(null);
         setPreviewMotion(false);
       }
       if (gesture.current) return;
@@ -976,6 +1020,9 @@ function App({ initial }: { initial: Library }) {
     projectsOpen,
     insertTab,
     saveNow,
+    connectionEdit,
+    youtubePlaybackId,
+    selectedHeading,
   ]);
   const point = (e: { clientX: number; clientY: number }) => {
     const matrix = svgRef.current
@@ -1030,6 +1077,23 @@ function App({ initial }: { initial: Library }) {
   };
   const hit = (p: { x: number; y: number }) =>
     connectionTargetAt(scene.items, p, [], 0);
+  const commitConnectionToPort = (targetId: string, port: ArrowPort) => {
+    if (!connectionEdit) return false;
+    const arrow = scene.items.find((item) => item.id === connectionEdit.arrowId);
+    const target = scene.items.find((item) => item.id === targetId);
+    const other = connectionEdit.endpoint === "from" ? arrow?.to : arrow?.from;
+    if (!arrow || arrow.type !== "arrow" || arrow.locked || arrow.hidden || !target || target.id === arrow.id || target.id === other || target.hidden || target.locked || ["arrow", "pen"].includes(target.type)) return false;
+    const anchor = portAnchor(target, port);
+    const updated = reconnectArrowEndpoint(arrow, scene.items, connectionEdit.endpoint, anchor, target, port);
+    if (updated.from !== arrow.from || updated.to !== arrow.to || updated.fromPort !== arrow.fromPort || updated.toPort !== arrow.toPort || updated.x !== arrow.x || updated.y !== arrow.y || updated.w !== arrow.w || updated.h !== arrow.h) {
+      checkpoint();
+      updateScene((s) => ({ ...s, items: s.items.map((item) => item.id === arrow.id ? updated : item) }));
+    }
+    setConnectionEdit(null);
+    setConnectorPreview(null);
+    gesture.current = null;
+    return true;
+  };
   const down = (e: React.PointerEvent) => {
     if (
       (e.target as Element).closest("[data-media-control]") &&
@@ -1055,8 +1119,39 @@ function App({ initial }: { initial: Library }) {
       const endpoint = endpointHandle.getAttribute("data-connector-endpoint") as "from" | "to";
       if (arrow?.type === "arrow" && !arrow.locked && !arrow.hidden) {
         setSelected([arrow.id]);
+        setSelectedHeading(null);
+        setConnectionEdit({ arrowId: arrow.id, endpoint });
         gesture.current = { kind: "connector-endpoint", p, arrowId, endpoint, items: clone(scene.items), dragging: false };
-        setConnectorPreview({ kind: "endpoint", arrowId: arrow.id, endpoint, point: p });
+        setConnectorPreview(null);
+      }
+      return;
+    }
+    const selectionResizeHandle = (e.target as Element).closest("[data-selection-resize]");
+    if (selectionResizeHandle && canTransformSelection(scene.items, selected)) {
+      const bounds = selectionBounds(scene.items, selected);
+      const handle = selectionResizeHandle.getAttribute("data-selection-resize") as SelectionResizeHandle;
+      if (bounds && ["nw", "n", "ne", "e", "se", "s", "sw", "w"].includes(handle)) {
+        setConnectionEdit(null);
+        setConnectorPreview(null);
+        setSelectedHeading(null);
+        const ids = expandGroupIds(scene.items, selected);
+        if (youtubePlaybackId && ids.includes(youtubePlaybackId)) setYoutubePlaybackId(null);
+        gesture.current = { kind: "selection-resize", p, handle, bounds, ids, items: clone(scene.items), dragging: false, checkpoint: false };
+      }
+      return;
+    }
+    const headingResize = (e.target as Element).closest("[data-scene-heading-resize]");
+    const headingTarget = (e.target as Element).closest("[data-scene-heading]");
+    if (headingTarget || headingResize) {
+      const field = (headingResize?.getAttribute("data-scene-heading-resize") || headingTarget?.getAttribute("data-scene-heading")) as SceneHeadingField;
+      if (["name", "description", "subtitle"].includes(field)) {
+        setSelectedHeading(field);
+        setHeadingPanelField(field);
+        setSelected([]);
+        setConnectionEdit(null);
+        setConnectorPreview(null);
+        const layout = sceneHeadingLayout(scene, field);
+        gesture.current = { kind: headingResize ? "heading-resize" : "heading-move", p, field, layout, initialBounds: sceneHeadingBounds(scene, field, index), previousLayout: scene.headingLayout?.[field] ? clone(scene.headingLayout[field]) : null, dragging: false, checkpoint: false };
       }
       return;
     }
@@ -1065,15 +1160,27 @@ function App({ initial }: { initial: Library }) {
       const sourceId = portHandle.closest("[data-item]")?.getAttribute("data-item");
       const source = scene.items.find((item) => item.id === sourceId);
       const port = portHandle.getAttribute("data-connection-port") as ArrowPort;
+      if (connectionEdit && source && sourceId) {
+        if (["north", "east", "south", "west"].includes(port)) commitConnectionToPort(sourceId, port);
+        return;
+      }
       if (source && !source.hidden && !source.locked && ["north", "east", "south", "west"].includes(port)) {
         const start = portAnchor(source, port);
         setSelected(itemSelection(scene.items, source.id));
+        setSelectedHeading(null);
         gesture.current = { kind: "connector-create", p, start, sourceId: source.id, sourcePort: port, dragging: false };
         setConnectorPreview({ kind: "create", fromId: source.id, fromPort: port, start, point: p });
       }
       return;
     }
+    if (connectionEdit) {
+      setConnectionEdit(null);
+      setConnectorPreview(null);
+    }
     if (tool === "hand" || e.button === 1 || spaceRef.current) {
+      setSelectedHeading(null);
+      setConnectionEdit(null);
+      setConnectorPreview(null);
       gesture.current = {
         kind: "pan",
         x: e.clientX,
@@ -1089,6 +1196,11 @@ function App({ initial }: { initial: Library }) {
       return;
     }
     if (tool === "select") {
+      setSelectedHeading(null);
+      if (connectionEdit && target !== connectionEdit.arrowId) {
+        setConnectionEdit(null);
+        setConnectorPreview(null);
+      }
       const modified = e.ctrlKey || e.metaKey || e.shiftKey;
       if (target) {
         const targetIds = itemSelection(scene.items, target);
@@ -1107,6 +1219,7 @@ function App({ initial }: { initial: Library }) {
         const editable = new Set(editableSelection(scene.items, ids));
         const resize = (e.target as Element).getAttribute("data-resize") !== null;
         const targetItem = scene.items.find((item) => item.id === target);
+        if (resize && youtubePlaybackId === target) setYoutubePlaybackId(null);
         gesture.current = {
           kind: !editable.has(target) ? "select-only" : resize && !targetItem?.groupId ? "resize" : "move",
           p,
@@ -1177,7 +1290,18 @@ function App({ initial }: { initial: Library }) {
   };
   const move = (e: React.PointerEvent) => {
     const g = gesture.current;
-    if (!g) return;
+    if (!g) {
+      if (connectionEdit) {
+        const arrow = scene.items.find((item) => item.id === connectionEdit.arrowId);
+        const other = connectionEdit.endpoint === "from" ? arrow?.to : arrow?.from;
+        const excluded = [connectionEdit.arrowId, other].filter(Boolean) as string[];
+        const target = connectionPortAt(scene.items, point(e), excluded, 13 / view.z);
+        setConnectorPreview(target
+          ? { kind: "endpoint", arrowId: connectionEdit.arrowId, endpoint: connectionEdit.endpoint, point: target.point, targetId: target.item.id, targetPort: target.port }
+          : null);
+      }
+      return;
+    }
     if (g.kind === "pan") {
       setView({
         ...g.view,
@@ -1191,19 +1315,21 @@ function App({ initial }: { initial: Library }) {
       dy = p.y - g.p.y;
     if (g.kind === "connector-create") {
       g.dragging ||= Math.hypot(dx, dy) * view.z >= 4;
-      const target = connectionTargetAt(scene.items, p, [g.sourceId], 12 / view.z);
-      setConnectorPreview({ kind: "create", fromId: g.sourceId, fromPort: g.sourcePort, start: g.start, point: p, targetId: target?.id });
+      const exactPort = connectionPortAt(scene.items, p, [g.sourceId], 13 / view.z);
+      const target = exactPort?.item || connectionTargetAt(scene.items, p, [g.sourceId], 12 / view.z);
+      setConnectorPreview({ kind: "create", fromId: g.sourceId, fromPort: g.sourcePort, start: g.start, point: exactPort?.point || p, targetId: target?.id, targetPort: exactPort?.port });
       return;
     }
     if (g.kind === "connector-endpoint") {
       g.dragging ||= Math.hypot(dx, dy) * view.z >= 4;
       const arrow = g.items.find((item: Item) => item.id === g.arrowId);
       const excluded = [g.arrowId, g.endpoint === "from" ? arrow?.to : arrow?.from].filter(Boolean) as string[];
-      const target = connectionTargetAt(scene.items, p, excluded, 12 / view.z);
-      setConnectorPreview({ kind: "endpoint", arrowId: g.arrowId, endpoint: g.endpoint, point: p, targetId: target?.id });
+      const exactPort = connectionPortAt(scene.items, p, excluded, 13 / view.z);
+      const target = exactPort?.item || connectionTargetAt(scene.items, p, excluded, 12 / view.z);
+      setConnectorPreview({ kind: "endpoint", arrowId: g.arrowId, endpoint: g.endpoint, point: exactPort?.point || p, targetId: target?.id, targetPort: exactPort?.port });
       return;
     }
-    if (["move", "resize", "marquee"].includes(g.kind)) {
+    if (["move", "resize", "marquee", "selection-resize", "heading-move", "heading-resize"].includes(g.kind)) {
       if (!g.dragging && Math.hypot(dx, dy) * view.z < 4) return;
       g.dragging = true;
       if (g.kind === "marquee") {
@@ -1233,6 +1359,25 @@ function App({ initial }: { initial: Library }) {
         g.priorFuture = [...future.current];
         checkpoint();
         g.checkpoint = true;
+      }
+      if (g.kind === "selection-resize") {
+        updateScene((s) => ({
+          ...s,
+          items: resizeSelectionFromSnapshot(g.items, g.ids, g.bounds, g.handle, p, { shift: e.shiftKey, alt: e.altKey }, {
+            measureText: (text, font) => { measure.font = font; return measure.measureText(text).width; },
+          }),
+        }));
+        return;
+      }
+      if (g.kind === "heading-move" || g.kind === "heading-resize") {
+        const field = g.field as SceneHeadingField;
+        if (g.kind === "heading-move") {
+          setHeadingLayout(field, { x: Math.max(-50000, Math.min(50000, g.layout.x + dx)), y: Math.max(-50000, Math.min(50000, g.layout.y + dy)) });
+        } else {
+          const ratio = Math.max(0.25, Math.min(8, 1 + Math.max(dx / Math.max(1, g.layout.width), dy / Math.max(1, g.initialBounds.h))));
+          setHeadingLayout(field, { width: Math.max(24, Math.min(20000, g.layout.width * ratio)), fontSize: Math.max(8, Math.min(240, g.layout.fontSize * ratio)) });
+        }
+        return;
       }
       if (g.kind === "move") {
         const settings = board.settings;
@@ -1322,32 +1467,38 @@ function App({ initial }: { initial: Library }) {
     const g = gesture.current;
     if (!g) return;
     if (g.kind === "marquee") setSelected(g.base);
-    if ((g.kind === "move" || g.kind === "resize") && g.checkpoint) {
+    if (["move", "resize", "selection-resize"].includes(g.kind) && g.checkpoint) {
       updateScene((s) => ({ ...s, items: g.items }));
+      history.current = g.priorHistory;
+      future.current = g.priorFuture;
+      tick((n) => n + 1);
+    }
+    if (["heading-move", "heading-resize"].includes(g.kind) && g.checkpoint) {
+      updateScene((s) => patchSceneHeadingLayout(s, g.field, g.previousLayout));
       history.current = g.priorHistory;
       future.current = g.priorFuture;
       tick((n) => n + 1);
     }
     gesture.current = null;
     setConnectorPreview(null);
+    setConnectionEdit(null);
     setMarquee(null);
     setAlignmentGuides([]);
   };
   const up = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (
-      gesture.current &&
-      ["move", "resize", "marquee"].includes(gesture.current.kind)
-    )
+    if (gesture.current && ["move", "resize", "marquee", "selection-resize", "heading-move", "heading-resize"].includes(gesture.current.kind))
       move(e);
     if (gesture.current && ["connector-create", "connector-endpoint"].includes(gesture.current.kind)) move(e);
     const g = gesture.current;
     if (g?.kind === "connector-create") {
       const source = scene.items.find((item) => item.id === g.sourceId);
-      const target = connectionTargetAt(scene.items, point(e), [g.sourceId], 12 / view.z);
+      const pointer = point(e);
+      const exactPort = connectionPortAt(scene.items, pointer, [g.sourceId], 13 / view.z);
+      const target = exactPort?.item || connectionTargetAt(scene.items, pointer, [g.sourceId], 12 / view.z);
       if (g.dragging && source && !source.locked && !source.hidden) {
         const start = portAnchor(source, g.sourcePort);
-        const toPort = target ? portForDirection(target, start) : undefined;
-        const end = target && toPort ? portAnchor(target, toPort) : point(e);
+        const toPort = target ? exactPort?.port || portForDirection(target, start) : undefined;
+        const end = target && toPort ? portAnchor(target, toPort) : pointer;
         const arrow: Item = {
           id: uid(), type: "arrow", x: start.x, y: start.y, w: end.x - start.x, h: end.y - start.y,
           text: "", color, fill: "transparent", size: 26, step: 0, animation: "fade",
@@ -1366,13 +1517,18 @@ function App({ initial }: { initial: Library }) {
       const arrow = scene.items.find((item) => item.id === g.arrowId);
       const pointer = point(e);
       const excluded = [g.arrowId, g.endpoint === "from" ? arrow?.to : arrow?.from].filter(Boolean) as string[];
-      const target = connectionTargetAt(scene.items, pointer, excluded, 12 / view.z);
+      const exactPort = connectionPortAt(scene.items, pointer, excluded, 13 / view.z);
+      const target = exactPort?.item || connectionTargetAt(scene.items, pointer, excluded, 12 / view.z);
       if (g.dragging && arrow && !arrow.locked && !arrow.hidden) {
-        const updated = reconnectArrowEndpoint(arrow, scene.items, g.endpoint, pointer, target);
+        const endpoint = exactPort?.point || pointer;
+        const updated = reconnectArrowEndpoint(arrow, scene.items, g.endpoint, endpoint, target, exactPort?.port);
         if (updated !== arrow) {
           checkpoint();
           updateScene((s) => ({ ...s, items: s.items.map((item) => item.id === arrow.id ? updated : item) }));
         }
+        setConnectionEdit(null);
+      } else if (!g.dragging) {
+        setConnectionEdit({ arrowId: g.arrowId, endpoint: g.endpoint });
       }
       setConnectorPreview(null);
       gesture.current = null;
@@ -1448,7 +1604,12 @@ function App({ initial }: { initial: Library }) {
     }
     if (i.type === "link" && i.url) {
       setInteractId(null);
-      setLinkPreview({ url: i.url, title: i.text });
+      let youtube = false;
+      try { youtube = normalizePreviewLink(i.url).kind === "youtube"; } catch {}
+      if (youtube) {
+        setSelected(itemSelection(scene.items, i.id));
+        setYoutubePlaybackId(i.id);
+      } else setLinkPreview({ url: i.url, title: i.text });
       return;
     }
     if (i.type === "file" && ((i.assetMime || "").toLowerCase().includes("pdf") || i.assetName?.toLowerCase().endsWith(".pdf"))) {
@@ -1471,6 +1632,17 @@ function App({ initial }: { initial: Library }) {
     // Pointer capture can retarget dblclick to the SVG; inspect the element
     // under the released pointer so an existing item is edited, not duplicated.
     const target = document.elementFromPoint(e.clientX, e.clientY) || e.target as Element;
+    const heading = target.closest("text[data-scene-heading]")?.getAttribute("data-scene-heading") as SceneHeadingField | null;
+    if (heading && ["name", "description", "subtitle"].includes(heading)) {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedHeading(heading);
+      setHeadingPanelField(heading);
+      setTab("sections");
+      setSidebar(true);
+      setEditingSceneField(heading);
+      return;
+    }
     const itemId = target.closest("[data-item]")?.getAttribute("data-item");
     const existing = scene.items.find((i) => i.id === itemId);
     if (existing) {
@@ -1481,7 +1653,7 @@ function App({ initial }: { initial: Library }) {
     }
     if (
       target.closest(
-        "[data-item], [data-selection], [data-resize], [data-scene-header], .scene-heading-editable, [data-media-control]",
+        "[data-item], [data-selection], [data-resize], [data-selection-resize], [data-scene-heading], [data-scene-header], .scene-heading-editable, [data-media-control]",
       )
     )
       return;
@@ -1634,14 +1806,10 @@ function App({ initial }: { initial: Library }) {
     copy.setAttribute("xmlns", "http://www.w3.org/2000/svg");
     copy.setAttribute("width", "1440");
     copy.setAttribute("height", "1000");
-    copy.setAttribute("viewBox", "-60 -50 1260 875");
     const group = copy.querySelector("[data-world]");
     group?.removeAttribute("transform");
     group?.removeAttribute("style");
-    copy.querySelectorAll("[data-selection], [data-alignment-guide]").forEach((e) => e.remove());
-    copy
-      .querySelectorAll("[data-item]")
-      .forEach((e) => e.removeAttribute("style"));
+    stripSvgEditorHelpers(copy);
     const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     bg.setAttribute("x", "-60");
     bg.setAttribute("y", "-50");
@@ -1664,18 +1832,12 @@ function App({ initial }: { initial: Library }) {
     );
     fontStyle.textContent = `@font-face{font-family:Caveat;font-weight:400 700;src:url(data:font/woff2;base64,${encoded[0]})} @font-face{font-family:'DM Sans';font-weight:400 700;src:url(data:font/woff2;base64,${encoded[1]})}`;
     copy.insertBefore(fontStyle, copy.firstChild);
-    const bounds = scene.items.filter(
-      (i) => !i.hidden && !["arrow", "pen"].includes(i.type),
-    );
-    const bx = Math.min(-60, ...bounds.map((i) => i.x - 40)),
-      by = Math.min(-50, ...bounds.map((i) => i.y - 40)),
-      br = Math.max(1200, ...bounds.map((i) => i.x + i.w + 40)),
-      bb = Math.max(825, ...bounds.map((i) => i.y + i.h + 40));
-    copy.setAttribute("viewBox", `${bx} ${by} ${br - bx} ${bb - by}`);
+    setSceneSvgExportFrame(copy, scene, index);
+    const [bx, by, frameWidth, frameHeight] = copy.getAttribute("viewBox")!.split(/\s+/).map(Number);
     bg.setAttribute("x", String(bx));
     bg.setAttribute("y", String(by));
-    bg.setAttribute("width", String(br - bx));
-    bg.setAttribute("height", String(bb - by));
+    bg.setAttribute("width", String(frameWidth));
+    bg.setAttribute("height", String(frameHeight));
     copy
       .querySelectorAll(".arrow-particle,animateMotion")
       .forEach((e) => e.remove());
@@ -1819,11 +1981,14 @@ function App({ initial }: { initial: Library }) {
     setInsertTab(null);
   };
   const insertLink = (url: string, title: string) => {
+    let isYoutube = false;
+    try { isYoutube = normalizePreviewLink(url).kind === "youtube"; } catch {}
+    const width = isYoutube ? 480 : 350;
     const i = place(
       "link",
       { url, text: title || new URL(url).hostname },
-      350,
-      130,
+      width,
+      isYoutube ? width * 9 / 16 : 130,
     );
     change((s) => ({ ...s, items: [...s.items, i] }));
     setSelected([i.id]);
@@ -2023,8 +2188,14 @@ function App({ initial }: { initial: Library }) {
           "#85b9e2": "#396da0",
           "#c3a4e7": "#7b54a5",
           "#ee9b91": "#aa4e42",
-        }[c] || c
+      }[c] || c
       : c;
+  const connectionArrow = connectionEdit ? scene.items.find((item) => item.id === connectionEdit.arrowId) : undefined;
+  const connectionOther = connectionEdit?.endpoint === "from" ? connectionArrow?.to : connectionArrow?.from;
+  const connectionPortTargets = connectionEdit
+    ? getConnectionPortTargets(scene.items, [connectionEdit.arrowId, ...(connectionOther ? [connectionOther] : [])])
+    : [];
+  const connectionPortItemIds = new Set(connectionPortTargets.map((entry) => entry.item.id));
   const renderItem = (i: Item) => {
     if (i.hidden || (i.type === "arrow" && scene.items.some((target) => target.hidden && (target.id === i.from || target.id === i.to)))) return null;
     const path = i.type === "arrow" ? arrowGeometry(i, scene.items).path : "";
@@ -2087,6 +2258,15 @@ function App({ initial }: { initial: Library }) {
             interactive={(present && !hidden) || interactId === i.id}
             active={(present && !hidden) || interactId === i.id}
             color={c}
+            selected={selected.includes(i.id)}
+            youtubeActive={youtubePlaybackId === i.id}
+            onStartYoutube={() => {
+              setSelected([i.id]);
+              setSelectedHeading(null);
+              setConnectionEdit(null);
+              setConnectorPreview(null);
+              setYoutubePlaybackId(i.id);
+            }}
             onOpenPdf={(assetId) => setPdfPreview({ assetId, name: i.assetName || "Documento PDF" })}
             onOpenLink={() => setLinkPreview({ url: i.url || "", title: i.text })}
           />
@@ -2287,33 +2467,14 @@ function App({ initial }: { initial: Library }) {
               <rect
                 data-resize="true"
                 data-item={i.id}
-                x={i.x + i.w - 4}
-                y={i.y + i.h - 4}
+                x={i.x + i.w + (youtubePlaybackId === i.id ? 5 / view.z : -4)}
+                y={i.y + i.h + (youtubePlaybackId === i.id ? 5 / view.z : -4)}
                 width={8 / view.z}
                 height={8 / view.z}
                 fill={light ? "#1672ce" : "#79baff"}
                 style={{ cursor: "nwse-resize" }}
               />
             )}
-            {!i.locked && !i.hidden && !["arrow", "pen"].includes(i.type) &&
-              (selected.includes(i.id) || hoveredConnectorItem === i.id) && (
-                <g data-connection-ports="true">
-                  {(["north", "east", "south", "west"] as const).map((port) => {
-                    const anchor = portAnchor(i, port);
-                    return <circle
-                      key={port}
-                      data-connection-port={port}
-                      cx={anchor.x}
-                      cy={anchor.y}
-                      r={7 / view.z}
-                      fill={light ? "#1672ce" : "#79baff"}
-                      stroke="var(--bg)"
-                      strokeWidth={2 / view.z}
-                      style={{ cursor: "crosshair" }}
-                    />;
-                  })}
-                </g>
-              )}
             {selected.includes(i.id) && i.type === "arrow" && !i.locked && (
               <g data-connector-handles="true">
                 {(["from", "to"] as const).map((endpoint) => {
@@ -2324,7 +2485,7 @@ function App({ initial }: { initial: Library }) {
                     cx={point.x}
                     cy={point.y}
                     r={7 / view.z}
-                    fill={light ? "#1672ce" : "#79baff"}
+                    fill={connectionEdit?.arrowId === i.id && connectionEdit.endpoint === endpoint ? "#f4a340" : light ? "#1672ce" : "#79baff"}
                     stroke="var(--bg)"
                     strokeWidth={2 / view.z}
                     style={{ cursor: "crosshair" }}
@@ -2334,10 +2495,84 @@ function App({ initial }: { initial: Library }) {
             )}
           </g>
         )}
+        {!present && !i.locked && !i.hidden && !["arrow", "pen"].includes(i.type) &&
+          (selected.includes(i.id) || hoveredConnectorItem === i.id || connectionPortItemIds.has(i.id)) && (
+            <g data-connection-ports="true">
+              {(["north", "east", "south", "west"] as const).map((port) => {
+                const anchor = portAnchor(i, port);
+                const highlighted = connectorPreview?.targetId === i.id && connectorPreview.targetPort === port;
+                return <circle
+                  key={port}
+                  data-connection-port={port}
+                  data-connection-target-port={highlighted ? "true" : undefined}
+                  cx={anchor.x}
+                  cy={anchor.y}
+                  r={(highlighted ? 8 : 7) / view.z}
+                  fill={highlighted ? "#f4a340" : light ? "#1672ce" : "#79baff"}
+                  stroke="var(--bg)"
+                  strokeWidth={2 / view.z}
+                  tabIndex={connectionEdit ? 0 : undefined}
+                  role={connectionEdit ? "button" : undefined}
+                  aria-label={connectionEdit ? `Conectar à porta ${port} de ${i.name || i.text || i.type}` : undefined}
+                  style={{ cursor: "crosshair" }}
+                  onFocus={() => {
+                    if (!connectionEdit) return;
+                    setConnectorPreview({ kind: "endpoint", arrowId: connectionEdit.arrowId, endpoint: connectionEdit.endpoint, point: anchor, targetId: i.id, targetPort: port });
+                  }}
+                  onKeyDown={(event) => {
+                    if (connectionEdit && (event.key === "Enter" || event.key === " ")) {
+                      event.preventDefault();
+                      commitConnectionToPort(i.id, port);
+                    }
+                  }}
+                />;
+              })}
+            </g>
+          )}
       </g>
     );
   };
   const editableSelected = editableSelection(scene.items, selected);
+  const selectedBounds = selectionBounds(scene.items, selected);
+  const multipleTransformable = canTransformSelection(scene.items, selected);
+  const selectedYoutubeItem = selected.length === 1
+    ? scene.items.find((item) => item.id === selected[0] && item.type === "link" && !!item.url)
+    : undefined;
+  const selectedYoutube = (() => {
+    if (!selectedYoutubeItem?.url) return false;
+    try { return normalizePreviewLink(selectedYoutubeItem.url).kind === "youtube"; }
+    catch { return false; }
+  })();
+  const youtubeToolbarStyle = (() => {
+    if (!selectedYoutubeItem || !selectedYoutube || !canvasRef.current) return undefined;
+    const available = Math.max(220, canvasRef.current.clientWidth - 24);
+    const width = Math.min(490, available, Math.max(220, selectedYoutubeItem.w * view.z));
+    const itemTop = view.y + selectedYoutubeItem.y * view.z;
+    const itemLeft = view.x + selectedYoutubeItem.x * view.z;
+    const itemWidth = selectedYoutubeItem.w * view.z;
+    const left = Math.max(12, Math.min(canvasRef.current.clientWidth - width - 12, itemLeft + itemWidth / 2 - width / 2));
+    const toolbarBottom = 24 + 9 * 41 + 10;
+    let top = itemTop - 56;
+    if (top < toolbarBottom && left < 82) top = view.y + (selectedYoutubeItem.y + selectedYoutubeItem.h) * view.z + 12;
+    top = Math.max(8, Math.min(canvasRef.current.clientHeight - 48, top));
+    return { left, top, width };
+  })();
+  const commitYoutubeUrl = (itemId: string, value: string) => {
+    try {
+      const normalized = safeLink(value);
+      normalizePreviewLink(normalized);
+      const current = scene.items.find((item) => item.id === itemId);
+      if (current?.url !== normalized) {
+        checkpoint();
+        updateScene((s) => ({ ...s, items: s.items.map((item) => item.id === itemId ? { ...item, url: normalized } : item) }));
+        setYoutubePlaybackId(null);
+      }
+      return true;
+    } catch (error) {
+      notify((error as Error).message);
+      return false;
+    }
+  };
   const connectorPreviewModel = (() => {
     if (!connectorPreview) return null;
     if (connectorPreview.kind === "create") {
@@ -2345,7 +2580,7 @@ function App({ initial }: { initial: Library }) {
       if (!source) return null;
       const target = connectorPreview.targetId ? scene.items.find((item) => item.id === connectorPreview.targetId) : undefined;
       const start = portAnchor(source, connectorPreview.fromPort);
-      const toPort = target ? portForDirection(target, start) : undefined;
+      const toPort = target ? connectorPreview.targetPort || portForDirection(target, start) : undefined;
       const end = target && toPort ? portAnchor(target, toPort) : connectorPreview.point;
       const item: Item = { id: "connector-preview", type: "arrow", x: start.x, y: start.y, w: end.x - start.x, h: end.y - start.y, text: "", color, fill: "transparent", size: 26, step: 0, animation: "fade", from: source.id, fromPort: connectorPreview.fromPort, to: target?.id, toPort };
       return { item, path: arrowGeometry(item, [...scene.items, item]).path, target };
@@ -2353,7 +2588,8 @@ function App({ initial }: { initial: Library }) {
     const original = scene.items.find((item) => item.id === connectorPreview.arrowId);
     if (!original) return null;
     const target = connectorPreview.targetId ? scene.items.find((item) => item.id === connectorPreview.targetId) : undefined;
-    const item = reconnectArrowEndpoint(original, scene.items, connectorPreview.endpoint, connectorPreview.point, target);
+    const targetPort = connectorPreview.targetPort;
+    const item = reconnectArrowEndpoint(original, scene.items, connectorPreview.endpoint, connectorPreview.point, target, targetPort);
     const items = scene.items.map((entry) => entry.id === item.id ? item : entry);
     return { item, path: arrowGeometry(item, items).path, target };
   })();
@@ -2624,109 +2860,28 @@ function App({ initial }: { initial: Library }) {
                 className={`scene-content transition-${transition.kind}`}
                 style={{ animationDuration: `${transition.ms}ms` }}
               >
-                <text
-                  className={!present ? "scene-heading-editable" : undefined}
-                  x="40"
-                  y="32"
-                  fill={mappedColor(colors[1])}
-                  fontFamily="DM Sans, sans-serif"
-                  fontSize="12"
-                  letterSpacing="2"
-                  aria-label="Nome da seção no canvas"
-                  onPointerDown={
-                    !present ? (e) => e.stopPropagation() : undefined
-                  }
-                  onDoubleClick={
-                    !present
-                      ? (e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setEditingSceneField("name");
-                        }
-                      : undefined
-                  }
-                >
-                  {!present && (
-                    <title>Duplo clique para editar o nome da seção</title>
-                  )}
-                  {String(index + 1).padStart(2, "0")} /{" "}
-                  {scene.name.toLocaleUpperCase("pt-BR")}
-                </text>
-                <path
-                  d="M40 44 Q105 47 176 43"
-                  fill="none"
-                  stroke={mappedColor(colors[1])}
-                  strokeWidth="1.3"
+                <SectionHeadings
+                  scene={scene}
+                  index={index}
+                  selected={editingSceneField ? null : selectedHeading}
+                  present={present}
+                  zoom={view.z}
+                  accent={mappedColor(colors[1])}
+                  textColor={mappedColor(colors[0])}
+                  onPointerDown={(field) => {
+                    setSelectedHeading(field);
+                    setHeadingPanelField(field);
+                  }}
+                  onDoubleClick={(field, event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSelectedHeading(field);
+                    setHeadingPanelField(field);
+                    setTab("sections");
+                    setSidebar(true);
+                    setEditingSceneField(field);
+                  }}
                 />
-                <text
-                  className={!present ? "scene-heading-editable" : undefined}
-                  x="570"
-                  y="103"
-                  textAnchor="middle"
-                  fill={mappedColor(colors[0])}
-                  fontFamily="Caveat, cursive"
-                  fontSize="59"
-                  fontWeight="500"
-                  aria-label="Título da seção no canvas"
-                  onPointerDown={
-                    !present ? (e) => e.stopPropagation() : undefined
-                  }
-                  onDoubleClick={
-                    !present
-                      ? (e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setEditingSceneField("description");
-                        }
-                      : undefined
-                  }
-                >
-                  {!present && (
-                    <title>Duplo clique para editar o título da seção</title>
-                  )}
-                  {scene.description}
-                </text>
-                {!!sceneSubtitle && (
-                  <>
-                    <path
-                      d="M545 116 Q760 108 1020 117"
-                      fill="none"
-                      stroke={mappedColor(colors[1])}
-                      strokeWidth="2.5"
-                    />
-                    <text
-                      className={
-                        !present ? "scene-heading-editable" : undefined
-                      }
-                      x="570"
-                      y="150"
-                      textAnchor="middle"
-                      fill={mappedColor(colors[0])}
-                      fontFamily="Caveat, cursive"
-                      fontSize="23"
-                      aria-label="Subtítulo da seção no canvas"
-                      onPointerDown={
-                        !present ? (e) => e.stopPropagation() : undefined
-                      }
-                      onDoubleClick={
-                        !present
-                          ? (e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setEditingSceneField("subtitle");
-                            }
-                          : undefined
-                      }
-                    >
-                      {!present && (
-                        <title>
-                          Duplo clique para editar o subtítulo da seção
-                        </title>
-                      )}
-                      {sceneSubtitle}
-                    </text>
-                  </>
-                )}
                 {scene.items.map(renderItem)}
                 {connectorPreviewModel && (
                   <g data-connector-preview="true" pointerEvents="none">
@@ -2765,21 +2920,42 @@ function App({ initial }: { initial: Library }) {
                 selected.length > 1 &&
                 (() => {
                   const b = selectionBounds(scene.items, selected);
+                  const transformable = canTransformSelection(scene.items, selected);
+                  const handles: Array<[SelectionResizeHandle, number, number]> = b ? [
+                    ["nw", b.x, b.y], ["n", b.x + b.w / 2, b.y], ["ne", b.x + b.w, b.y],
+                    ["e", b.x + b.w, b.y + b.h / 2], ["se", b.x + b.w, b.y + b.h],
+                    ["s", b.x + b.w / 2, b.y + b.h], ["sw", b.x, b.y + b.h], ["w", b.x, b.y + b.h / 2],
+                  ] : [];
                   return (
                     b && (
-                      <rect
-                        data-selection="true"
-                        data-selection-group="true"
-                        x={b.x - 9 / view.z}
-                        y={b.y - 9 / view.z}
-                        width={b.w + 18 / view.z}
-                        height={b.h + 18 / view.z}
-                        fill="none"
-                        stroke={light ? "#1672ce" : "#79baff"}
-                        strokeWidth={1 / view.z}
-                        strokeDasharray={`${5 / view.z} ${4 / view.z}`}
-                        pointerEvents="none"
-                      />
+                      <g data-selection-transform={transformable ? "enabled" : "blocked"}>
+                        <rect
+                          data-selection="true"
+                          data-selection-group="true"
+                          x={b.x - 9 / view.z}
+                          y={b.y - 9 / view.z}
+                          width={b.w + 18 / view.z}
+                          height={b.h + 18 / view.z}
+                          fill="none"
+                          stroke={light ? "#1672ce" : "#79baff"}
+                          strokeWidth={1 / view.z}
+                          strokeDasharray={`${5 / view.z} ${4 / view.z}`}
+                          pointerEvents="none"
+                        />
+                        {transformable && handles.map(([handle, x, y]) => <rect
+                          key={handle}
+                          data-selection-resize={handle}
+                          x={x - 6 / view.z}
+                          y={y - 6 / view.z}
+                          width={12 / view.z}
+                          height={12 / view.z}
+                          rx={2 / view.z}
+                          fill={light ? "#1672ce" : "#79baff"}
+                          stroke="var(--bg)"
+                          strokeWidth={1.5 / view.z}
+                          style={{ cursor: handle === "n" || handle === "s" ? "ns-resize" : handle === "e" || handle === "w" ? "ew-resize" : handle === "ne" || handle === "sw" ? "nesw-resize" : "nwse-resize" }}
+                        />)}
+                      </g>
                     )
                   );
                 })()}
@@ -2800,6 +2976,16 @@ function App({ initial }: { initial: Library }) {
               )}
             </g>
           </svg>
+          {selectedYoutube && selectedYoutubeItem && youtubeToolbarStyle && !present && (
+            <YouTubeBoardControls
+              item={selectedYoutubeItem}
+              style={youtubeToolbarStyle}
+              active={youtubePlaybackId === selectedYoutubeItem.id}
+              onCommitUrl={(value) => commitYoutubeUrl(selectedYoutubeItem.id, value)}
+              onOpen={() => { void openLink(selectedYoutubeItem.url || "").catch((error) => notify((error as Error).message)); }}
+              onToggle={() => setYoutubePlaybackId((current) => current === selectedYoutubeItem.id ? null : selectedYoutubeItem.id)}
+            />
+          )}
           {editingSceneField && (
             <input
               key={editingSceneField}
@@ -2812,22 +2998,24 @@ function App({ initial }: { initial: Library }) {
                     ? "Título da seção"
                     : "Subtítulo da seção"
               }
-              style={
-                editingSceneField === "name"
-                  ? {
-                      left: view.x + 40 * view.z,
-                      top: view.y + 14 * view.z,
-                    }
-                  : editingSceneField === "description"
-                    ? {
-                        left: view.x + 570 * view.z,
-                        top: view.y + 66 * view.z,
-                      }
-                    : {
-                        left: view.x + 570 * view.z,
-                        top: view.y + 128 * view.z,
-                      }
-              }
+              style={(() => {
+                const layout = sceneHeadingLayout(scene, editingSceneField);
+                const bounds = sceneHeadingBounds(scene, editingSceneField, index);
+                const align = layout.align || "left";
+                const x = align === "center" ? layout.x + layout.width / 2 : align === "right" ? layout.x + layout.width : layout.x;
+                return {
+                  left: view.x + x * view.z,
+                  top: view.y + layout.y * view.z,
+                  width: Math.max(80, layout.width * view.z),
+                  height: Math.max(30, bounds.h * view.z),
+                  fontSize: layout.fontSize * view.z,
+                  letterSpacing: editingSceneField === "name" ? `${2 * layout.fontSize / 12 * view.z}px` : undefined,
+                  lineHeight: editingSceneField === "description" ? 1.08 : 1.15,
+                  textAlign: align,
+                  transform: align === "center" ? "translateX(-50%)" : align === "right" ? "translateX(-100%)" : undefined,
+                  fontFamily: editingSceneField === "name" ? '"DM Sans", sans-serif' : '"Caveat", cursive',
+                };
+              })()}
               value={
                 editingSceneField === "subtitle"
                   ? sceneSubtitle
@@ -3211,6 +3399,47 @@ function App({ initial }: { initial: Library }) {
                       }
                     />
                   </label>
+                  <section className="section-heading-layout" aria-label="Layout dos títulos da seção">
+                    <div className="panel-subheading">Layout no canvas</div>
+                    <label>
+                      Campo do cabeçalho
+                      <select aria-label="Campo do cabeçalho" value={headingPanelField} onChange={(event) => setHeadingPanelField(event.target.value as SceneHeadingField)}>
+                        <option value="name">Nome da seção</option>
+                        <option value="description">Título</option>
+                        <option value="subtitle">Subtítulo</option>
+                      </select>
+                    </label>
+                    <div className="geometry-grid">
+                      {(["x", "y", "width", "fontSize"] as const).map((key) => {
+                        const value = sceneHeadingLayout(scene, headingPanelField)[key];
+                        const label = { x: "X", y: "Y", width: "Largura", fontSize: "Fonte" }[key];
+                        return <label key={key}>{label}<input
+                          type="number"
+                          min={key === "width" ? 24 : key === "fontSize" ? 8 : undefined}
+                          max={key === "width" ? 20000 : key === "fontSize" ? 240 : undefined}
+                          aria-label={`Cabeçalho ${key}`}
+                          value={Math.round(value * 100) / 100}
+                          onFocus={checkpoint}
+                          onChange={(event) => {
+                            const next = Number(event.target.value);
+                            if (!Number.isFinite(next)) return;
+                            setHeadingLayout(headingPanelField, { [key]: key === "width" ? Math.max(24, Math.min(20000, next)) : key === "fontSize" ? Math.max(8, Math.min(240, next)) : Math.max(-50000, Math.min(50000, next)) });
+                          }}
+                        /></label>;
+                      })}
+                    </div>
+                    <label>
+                      Alinhamento
+                      <select aria-label="Alinhamento do cabeçalho" value={sceneHeadingLayout(scene, headingPanelField).align || "left"} onFocus={checkpoint} onChange={(event) => setHeadingLayout(headingPanelField, { align: event.target.value as "left" | "center" | "right" })}>
+                        <option value="left">Esquerda</option><option value="center">Centro</option><option value="right">Direita</option>
+                      </select>
+                    </label>
+                    <div className="template-actions">
+                      <button aria-label={`Restaurar posição e tamanho de ${headingPanelField}`} onClick={() => { checkpoint(); updateScene((current) => patchSceneHeadingLayout(current, headingPanelField, null)); }}>Restaurar campo</button>
+                      <button aria-label="Restaurar posição e tamanho de todos os títulos" onClick={() => { checkpoint(); updateScene(resetSceneHeadingLayout); }} disabled={!scene.headingLayout}>Restaurar todos</button>
+                    </div>
+                    <p className="field-help">Arraste o texto no canvas para mover. A alça no canto ajusta largura e fonte. Os valores antigos continuam iguais até você alterar o layout.</p>
+                  </section>
                   <div className="section-settings-row">
                     <span>Ordem da seção</span>
                     <button
@@ -3457,6 +3686,32 @@ function App({ initial }: { initial: Library }) {
                           </div>
                         </>
                       )}
+                    {selected.length > 1 && selectedBounds && multipleTransformable && (
+                      <>
+                        <label>Limites da seleção</label>
+                        <div className="geometry-grid">
+                          {(["x", "y", "w", "h"] as const).map((key) => <label key={key}>{ { x: "X", y: "Y", w: "Largura", h: "Altura" }[key] }
+                            <input
+                              type="number"
+                              aria-label={`Seleção ${key}`}
+                              value={Math.round(selectedBounds[key])}
+                              onFocus={checkpoint}
+                              onChange={(event) => {
+                                const value = Number(event.target.value);
+                                if (!Number.isFinite(value)) return;
+                                updateScene((current) => ({ ...current, items: resizeSelectionToAxisBounds(current.items, selected, key, value, {
+                                  measureText: (text, font) => { measure.font = font; return measure.measureText(text).width; },
+                                }) }));
+                              }}
+                            />
+                          </label>)}
+                        </div>
+                        <p className="field-help">Redimensiona o conjunto sem agrupar os elementos; mantenha Shift para proporção e Alt para expandir pelo centro.</p>
+                      </>
+                    )}
+                    {selected.length > 1 && !multipleTransformable && (
+                      <p className="field-help selection-resize-blocked" role="status">A seleção inclui item bloqueado/oculto ou grupo parcialmente bloqueado. Desbloqueie ou revele todos os membros para redimensionar em conjunto.</p>
+                    )}
                     <div className="layer-actions">
                       <button
                         title="Trazer para frente"

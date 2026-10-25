@@ -194,10 +194,15 @@ test("four built-in section templates and saved custom templates clone identity 
   const builtIns = builtInTemplates();
   assert.deepEqual(builtIns.map((entry) => entry.name), ["Fluxo de processo", "Organograma", "Mapa de ideias", "Apresentação simples"]);
   const original = builtIns[0].scene;
+  original.headingLayout = { description: { x: -120, y: 240, width: 650, fontSize: 42, align: "left" } };
   const saved = saveSceneAsTemplate(original, "Fluxo reutilizável");
   const first = insertTemplateScene(saved, "Projeto", 1);
   const second = insertTemplateScene(saved, "Projeto", 2);
   assert.notEqual(first.id, second.id);
+  assert.deepEqual(first.headingLayout, saved.scene.headingLayout, "optional semantic heading layout survives template cloning");
+  first.headingLayout.description.x = 999;
+  assert.equal(second.headingLayout.description.x, -120, "template heading layout does not alias across inserted copies");
+  first.headingLayout.description.x = -120;
   assert.ok(first.items.every((entry, index) => entry.id !== second.items[index].id));
   for (const scene of [first, second]) {
     const ids = new Set(scene.items.map((entry) => entry.id));

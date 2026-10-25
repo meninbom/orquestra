@@ -28,7 +28,8 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
     await frame();
   };
   const screen = (x, y) => run(`(()=>{const p=new DOMPoint(${x},${y}).matrixTransform(document.querySelector('[data-world]').getScreenCTM());return{x:p.x,y:p.y}})()`);
-  const mouse = async (type, point, modifiers = 0) => { await cdp("Input.dispatchMouseEvent", { type, ...point, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1, modifiers }); await frame(); };
+  const mouse = async (type, point, modifiers = 0, clickCount = 1) => { await cdp("Input.dispatchMouseEvent", { type, ...point, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount, modifiers }); await frame(); };
+  const centerOf = (selector) => run(`(()=>{const r=document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect();if(!r)throw Error('Missing '+${JSON.stringify(selector)});return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   const clickItem = async (id) => {
     const point = await run(`(()=>{const r=document.querySelector('[data-item="${id}"]').getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);
     await mouse("mousePressed", point);
@@ -85,6 +86,139 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   await delay(550);
   assert.equal(await itemCount(), 0);
 
+  // Semantic section headings remain selectable and independently transformable
+  // without becoming board items; panel values and real canvas gestures persist.
+  const headingStart = (await activeScene()).scene;
+  const titleCenter = await centerOf('[data-scene-heading="description"]');
+  await mouse("mousePressed", titleCenter);
+  await mouse("mouseReleased", titleCenter);
+  assert.equal(await run('!!document.querySelector("[data-scene-heading-selection=description]")'), true);
+  assert.equal(await itemCount(), 0, "selecting a semantic heading does not create a text item");
+  await run(`document.querySelector(${JSON.stringify('[aria-label="Cabeçalho x"]')}).focus()`);
+  await edit('[aria-label="Cabeçalho x"]', 260);
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.description?.x === 260, "section heading X control persists");
+  await click(".history button:first-child");
+  await waitFor(async () => !(await activeScene()).scene.headingLayout, "undo restores the legacy default heading layout");
+  await click(".history button:nth-child(2)");
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.description?.x === 260, "redo restores the heading panel change");
+  const movedHeadingBefore = (await activeScene()).scene.headingLayout.description;
+  const movedHeadingPoint = await centerOf('[data-scene-heading="description"]');
+  const headingZoom = await run("document.querySelector('[data-world]').getScreenCTM().a");
+  await mouse("mousePressed", movedHeadingPoint);
+  await mouse("mouseMoved", { x: movedHeadingPoint.x + 24, y: movedHeadingPoint.y + 12 });
+  await mouse("mouseReleased", { x: movedHeadingPoint.x + 24, y: movedHeadingPoint.y + 12 });
+  try {
+    await waitFor(async () => (await activeScene()).scene.headingLayout?.description?.x > movedHeadingBefore.x, "semantic heading moves with a real canvas drag");
+  } catch (error) {
+    const diagnostics = {
+      before: movedHeadingBefore,
+      after: (await activeScene()).scene.headingLayout,
+      pointer: movedHeadingPoint,
+      zoom: headingZoom,
+      heading: await run(`(()=>{const e=document.querySelector('[data-scene-heading="description"]');return e&&{box:e.getBoundingClientRect().toJSON(),selected:!!document.querySelector('[data-scene-heading-selection="description"]'),editor:!!document.querySelector('.canvas-scene-edit'),active:document.activeElement?.getAttribute('aria-label')}})()`),
+      gestures: await run('({tool:document.querySelector(".toolbar .active")?.getAttribute("aria-label"),world:document.querySelector("[data-world]")?.getAttribute("transform")})'),
+    };
+    await writeFile(".qa/section-heading-move-debug.png", Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+    throw new Error(`${error.message}; heading diagnostics: ${JSON.stringify(diagnostics)}`);
+  }
+  const movedHeading = (await activeScene()).scene.headingLayout.description;
+  assert.ok(Math.abs(movedHeading.x - movedHeadingBefore.x - 24 / headingZoom) < 2, "heading movement uses world coordinates at the current zoom");
+  const headingResizePoint = await centerOf('[data-scene-heading-resize="description"]');
+  await mouse("mousePressed", headingResizePoint);
+  await mouse("mouseMoved", { x: headingResizePoint.x + 18, y: headingResizePoint.y + 3 });
+  await mouse("mouseReleased", { x: headingResizePoint.x + 18, y: headingResizePoint.y + 3 });
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.description?.width > movedHeading.width, "heading resize handle updates width and font");
+  assert.ok((await activeScene()).scene.headingLayout.description.fontSize > movedHeading.fontSize);
+  const resizedHeading = (await activeScene()).scene.headingLayout.description;
+  await click(".history button:first-child");
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.description?.width === movedHeading.width, "heading resize is a single undo step");
+  await click(".history button:nth-child(2)");
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.description?.width === resizedHeading.width, "heading resize redo restores the layout");
+  const editedHeadingPoint = await centerOf('[data-scene-heading="description"]');
+  await mouse("mousePressed", editedHeadingPoint, 0, 1);
+  await mouse("mouseReleased", editedHeadingPoint, 0, 1);
+  await delay(100);
+  await mouse("mousePressed", editedHeadingPoint, 0, 2);
+  await mouse("mouseReleased", editedHeadingPoint, 0, 2);
+  await waitFor(() => run('!!document.querySelector(".canvas-scene-edit-description")'), "double-click edits the semantic heading");
+  await edit(".canvas-scene-edit-description", "Título com acentuação editado");
+  await key("Enter", "Enter", 13);
+  await waitFor(async () => (await activeScene()).scene.description === "Título com acentuação editado", "semantic title text edits without a duplicate element");
+  assert.equal(await itemCount(), 0);
+
+  const namePoint = await centerOf('[data-scene-heading="name"]');
+  await mouse("mousePressed", namePoint);
+  await mouse("mouseReleased", namePoint);
+  const nameBeforeMove = (await activeScene()).scene.headingLayout?.name || { x: 40, y: 20, width: 420, fontSize: 12 };
+  const nameMovePoint = await centerOf('[data-scene-heading="name"]');
+  await mouse("mousePressed", nameMovePoint);
+  await mouse("mouseMoved", { x: nameMovePoint.x + 16, y: nameMovePoint.y + 8 });
+  await mouse("mouseReleased", { x: nameMovePoint.x + 16, y: nameMovePoint.y + 8 });
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.name?.x > nameBeforeMove.x, "section name moves from its own canvas field");
+  const nameMoved = (await activeScene()).scene.headingLayout.name;
+  const nameHandle = await centerOf('[data-scene-heading-resize="name"]');
+  await mouse("mousePressed", nameHandle);
+  await mouse("mouseMoved", { x: nameHandle.x + 14, y: nameHandle.y + 2 });
+  await mouse("mouseReleased", { x: nameHandle.x + 14, y: nameHandle.y + 2 });
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.name?.width > nameMoved.width, "section name has an independent resize handle");
+  assert.ok((await activeScene()).scene.headingLayout.name.fontSize > nameMoved.fontSize);
+  const nameEditPoint = await centerOf('[data-scene-heading="name"]');
+  await mouse("mousePressed", nameEditPoint, 0, 1);
+  await mouse("mouseReleased", nameEditPoint, 0, 1);
+  await delay(100);
+  await mouse("mousePressed", nameEditPoint, 0, 2);
+  await mouse("mouseReleased", nameEditPoint, 0, 2);
+  await waitFor(() => run('!!document.querySelector(".canvas-scene-edit-name")'), "double-click edits the section name field");
+  await edit(".canvas-scene-edit-name", "Nome semântico editado");
+  await key("Enter", "Enter", 13);
+  await waitFor(async () => (await activeScene()).scene.name === "Nome semântico editado", "section name text changes without adding an item");
+  await click('[aria-label="Restaurar posição e tamanho de name"]');
+  await waitFor(async () => !(await activeScene()).scene.headingLayout?.name, "per-field layout reset restores the name default");
+  await click(".history button:first-child");
+  await waitFor(async () => !!(await activeScene()).scene.headingLayout?.name, "undo restores the name layout");
+  await click(".history button:nth-child(2)");
+  await waitFor(async () => !(await activeScene()).scene.headingLayout?.name, "redo restores the name reset");
+
+  await edit('[aria-label="Campo do cabeçalho"]', "subtitle");
+  assert.equal(await run('!!document.querySelector("[data-scene-heading=subtitle]")'), false, "an empty new-section subtitle stays absent from the canvas");
+  await run(`document.querySelector(${JSON.stringify('[aria-label="Cabeçalho y"]')}).focus()`);
+  await edit('[aria-label="Cabeçalho y"]', 190);
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.subtitle?.y === 190, "the hidden empty subtitle remains recoverable from the section panel");
+  await run(`document.querySelector(${JSON.stringify('aside .section-settings [aria-label="Subtítulo da seção"]')}).focus()`);
+  await edit('aside .section-settings [aria-label="Subtítulo da seção"]', "Subtítulo semântico para o teste");
+  await waitFor(async () => (await activeScene()).scene.subtitle === "Subtítulo semântico para o teste", "the empty subtitle can be restored through the section panel");
+  const subtitlePoint = await centerOf('[data-scene-heading="subtitle"]');
+  await mouse("mousePressed", subtitlePoint);
+  await mouse("mouseReleased", subtitlePoint);
+  const subtitleBefore = (await activeScene()).scene.headingLayout.subtitle;
+  const subtitleMovePoint = await centerOf('[data-scene-heading="subtitle"]');
+  await mouse("mousePressed", subtitleMovePoint);
+  await mouse("mouseMoved", { x: subtitleMovePoint.x + 14, y: subtitleMovePoint.y + 8 });
+  await mouse("mouseReleased", { x: subtitleMovePoint.x + 14, y: subtitleMovePoint.y + 8 });
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.subtitle?.x > subtitleBefore.x, "visible subtitle moves as a semantic canvas field");
+  const subtitleMoved = (await activeScene()).scene.headingLayout.subtitle;
+  const subtitleHandle = await centerOf('[data-scene-heading-resize="subtitle"]');
+  await mouse("mousePressed", subtitleHandle);
+  await mouse("mouseMoved", { x: subtitleHandle.x + 12, y: subtitleHandle.y + 2 });
+  await mouse("mouseReleased", { x: subtitleHandle.x + 12, y: subtitleHandle.y + 2 });
+  await waitFor(async () => (await activeScene()).scene.headingLayout?.subtitle?.width > subtitleMoved.width, "visible subtitle resizes independently");
+  const subtitleEditPoint = await centerOf('[data-scene-heading="subtitle"]');
+  await mouse("mousePressed", subtitleEditPoint, 0, 1);
+  await mouse("mouseReleased", subtitleEditPoint, 0, 1);
+  await delay(100);
+  await mouse("mousePressed", subtitleEditPoint, 0, 2);
+  await mouse("mouseReleased", subtitleEditPoint, 0, 2);
+  await waitFor(() => run('!!document.querySelector(".canvas-scene-edit-subtitle")'), "double-click edits the subtitle field");
+  await edit(".canvas-scene-edit-subtitle", "Subtítulo revisado no canvas");
+  await key("Enter", "Enter", 13);
+  await waitFor(async () => (await activeScene()).scene.subtitle === "Subtítulo revisado no canvas", "subtitle text edits without creating an element");
+  await run(`document.querySelector(${JSON.stringify('aside .section-settings [aria-label="Subtítulo da seção"]')}).focus()`);
+  await edit('aside .section-settings [aria-label="Subtítulo da seção"]', "");
+  await waitFor(async () => (await activeScene()).scene.subtitle === "", "the subtitle remains empty when cleared");
+  await waitFor(() => run('!document.querySelector("[data-scene-heading=subtitle]")'), "an empty subtitle is removed from the canvas");
+  await writeFile(".qa/section-heading-layout.png", Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  assert.equal(headingStart.subtitle, "", "new project starts with a deliberately empty subtitle");
+
   // Arrange mixed board objects with a distribution operation, then align them.
   await draw("Retângulo", [100, 220], [180, 300]);
   await draw("Retângulo", [350, 240], [430, 320]);
@@ -123,17 +257,45 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   await waitFor(async () => near((await activeScene()).scene.items.find((item) => item.id === rightRect.id)?.x, guideTargetX), "alignment guide snap at high zoom");
   await click('button[title="Restaurar zoom 100%"]');
   await key("a", "KeyA", 65, 2);
+  assert.equal(await run('document.querySelectorAll("[data-selection-resize]").length'), 8, "a multi-selection exposes corner and edge transform handles");
+  const multiBefore = (await activeScene()).scene.items.filter((item) => [leftRect.id, middleRect.id, rightRect.id].includes(item.id));
+  const southeast = await centerOf('[data-selection-resize="se"]');
+  await mouse("mousePressed", southeast);
+  await mouse("mouseMoved", { x: southeast.x + 35, y: southeast.y + 24 });
+  await mouse("mouseReleased", { x: southeast.x + 35, y: southeast.y + 24 });
+  await waitFor(async () => (await activeScene()).scene.items.find((item) => item.id === leftRect.id)?.w > multiBefore.find((item) => item.id === leftRect.id).w, "collective corner handle resizes real canvas objects");
+  const multiResized = (await activeScene()).scene.items.filter((item) => [leftRect.id, middleRect.id, rightRect.id].includes(item.id));
+  assert.ok(multiResized.every((item) => [item.x, item.y, item.w, item.h, item.size].every(Number.isFinite)));
+  await click(".history button:first-child");
+  await waitFor(async () => (await activeScene()).scene.items.filter((item) => [leftRect.id, middleRect.id, rightRect.id].includes(item.id)).every((item) => {
+    const original = multiBefore.find((entry) => entry.id === item.id);
+    return item.x === original.x && item.y === original.y && item.w === original.w && item.h === original.h;
+  }), "collective resize is one undo step");
+  await click(".history button:nth-child(2)");
+  await waitFor(async () => (await activeScene()).scene.items.find((item) => item.id === leftRect.id)?.w === multiResized.find((item) => item.id === leftRect.id).w, "collective resize redo restores the transform");
+  await key("a", "KeyA", 65, 2);
+  const cancelHandle = await centerOf('[data-selection-resize="nw"]');
+  await mouse("mousePressed", cancelHandle);
+  await mouse("mouseMoved", { x: cancelHandle.x - 25, y: cancelHandle.y - 15 });
+  await key("Escape", "Escape", 27);
+  await mouse("mouseReleased", { x: cancelHandle.x - 25, y: cancelHandle.y - 15 });
+  await waitFor(async () => (await activeScene()).scene.items.filter((item) => [leftRect.id, middleRect.id, rightRect.id].includes(item.id)).every((item) => {
+    const expected = multiResized.find((entry) => entry.id === item.id);
+    return item.x === expected.x && item.y === expected.y && item.w === expected.w && item.h === expected.h;
+  }), "Escape cancels a collective resize without committing geometry");
+  await writeFile(".qa/selection-resize-multiple.png", Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await key("a", "KeyA", 65, 2);
   await click(".aside-tabs button:nth-child(2)");
-  const xPositions = () => run('[...document.querySelectorAll(".scene-content > [data-item]")].map(g=>+g.querySelector("rect[stroke]").getAttribute("x")).sort((a,b)=>a-b)');
-  const beforeDistribution = await xPositions();
+  const rectBounds = () => run('[...document.querySelectorAll(".scene-content > [data-item]")].map(g=>{const r=g.querySelector("rect[stroke]");return{x:+r.getAttribute("x"),w:+r.getAttribute("width")}}).sort((a,b)=>a.x-b.x)');
+  const beforeDistribution = await rectBounds();
   await click('.distribute-grid button:first-child');
-  const distributed = await xPositions();
-  assert.equal(distributed[0], beforeDistribution[0]);
-  assert.equal(distributed.at(-1), beforeDistribution.at(-1));
-  const gaps = [distributed[1] - distributed[0] - 80, distributed[2] - distributed[1] - 80];
-  assert.ok(Math.abs(gaps[0] - gaps[1]) < 1, JSON.stringify({ distributed, gaps }));
+  const distributed = await rectBounds();
+  assert.equal(distributed[0].x, beforeDistribution[0].x);
+  assert.equal(distributed.at(-1).x, beforeDistribution.at(-1).x);
+  const gaps = [distributed[1].x - distributed[0].x - distributed[0].w, distributed[2].x - distributed[1].x - distributed[1].w];
+  assert.ok(Math.abs(gaps[0] - gaps[1]) < 1, JSON.stringify({ beforeDistribution, distributed, gaps, selected: await run('[...document.querySelectorAll("[data-item][data-selected=true]")].map(item=>item.dataset.item)'), disabled: await run('document.querySelector(".distribute-grid button:first-child")?.disabled') }));
   await click('[aria-label="Alinhar esquerda"]');
-  const aligned = await xPositions();
+  const aligned = (await rectBounds()).map((item) => item.x);
   assert.ok(Math.max(...aligned) - Math.min(...aligned) < 1, `alignment acts on the selected bounds: ${JSON.stringify(aligned)}`);
 
   await key("g", "KeyG", 71, 2);
@@ -163,6 +325,7 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   await click(".aside-tabs button:nth-child(2)");
   await edit('[aria-label="Cor personalizada da borda"]', "#ff00ff");
   assert.equal(await run("document.querySelectorAll('[data-resize]').length"), 0, "a locked group exposes no resize handle");
+  assert.equal(await run("document.querySelectorAll('[data-selection-resize]').length"), 0, "a locked group exposes no collective resize handles");
   await run(`document.querySelector('[data-item]').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
   assert.equal(await run('!!document.querySelector(".canvas-edit")'), false, "double-click cannot enter edit mode for a locked member");
   await click('[aria-label="Borracha"]');
@@ -446,6 +609,11 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   currentProject = saved.projects.find((project) => project.board.title === "Board features QA");
   assert.ok(currentProject);
   assert.ok(currentProject.board.scenes[0].items.filter((item) => item.groupId).length === 3);
+  const persistedHeadings = currentProject.board.scenes[0];
+  assert.equal(persistedHeadings.description, "Título com acentuação editado");
+  assert.ok(persistedHeadings.headingLayout.description.x > 260 && persistedHeadings.headingLayout.description.width > 720);
+  assert.equal(persistedHeadings.subtitle, "");
+  assert.equal(persistedHeadings.headingLayout.subtitle.y, subtitleMoved.y, "empty subtitle layout survives project reload");
   assert.equal(currentProject.styles?.some((style) => style.name === "Texto QA"), false);
   assert.equal(saved.templates.some((template) => template.name === "Modelo QA"), true);
   return { viewport800x600: true, horizontalOverflow: false, alignment: true, distribution: true, snapAtZooms: [lowDrag.zoom, highDrag.zoom], altSuspension: true, alignmentGuideSnap: true, persistentGroups: true, lockedDeleteBlocked: true, lockedEditMoveCopyResizeEraserBlocked: true, lockedConnectorProtection: true, layerVisibility: true, layerRename: true, layerReorder: true, textFormatting: true, autoHeight: textGeometry.h, reusableStyle: true, confirmedStyleDeletion: true, templateCloneCount: 2, templateInstanceIsolation: true, backupImportUi: true, automaticVersion: automatic.id, manualAndSafetyVersions: true, missingMediaRestoreBlocked: !!profile, restoreAfterReload: true, pdfAssetId: imageAssetId, hiddenPdfMarkerId: hiddenTextId, customArrowId: arrowId };

@@ -82,6 +82,7 @@ test("custom section templates with media and saved styles are included in libra
   const library = initialLibrary();
   const project = library.projects[0];
   project.styles = [{ id: crypto.randomUUID(), name: "Destaque", properties: { color: "#8fe3b5", textColor: "#e2e9e2", fill: "transparent", size: 28, bold: true, italic: false, textAlign: "left", lineHeight: 1.2 } }];
+  project.board.scenes[0].headingLayout = { name: { x: 120, y: 30, width: 500, fontSize: 14, align: "left" } };
   const template = saveSceneAsTemplate(project.board.scenes[0], "Modelo com imagem");
   template.scene.items.push({
     id: crypto.randomUUID(), type: "image", x: 10, y: 20, w: 100, h: 90, text: "", color: "#8fe3b5",
@@ -94,6 +95,7 @@ test("custom section templates with media and saved styles are included in libra
   assert.ok(validLibrary(imported));
   assert.equal(imported.projects[1].styles[0].name, "Destaque");
   assert.equal(imported.templates.length, 1);
+  assert.deepEqual(imported.templates[0].scene.headingLayout, template.scene.headingLayout, "optional semantic heading layout survives library backup/import");
   const importedImage = imported.templates[0].scene.items.find((entry) => entry.type === "image");
   assert.notEqual(importedImage.assetId, asset.id);
   assert.deepEqual(new Uint8Array(await (await getAsset(importedImage.assetId)).blob.arrayBuffer()), new Uint8Array([9, 8, 7]));

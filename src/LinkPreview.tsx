@@ -10,7 +10,7 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { normalizePreviewLink, type LinkPreviewTarget } from "./linkPreview";
+import { normalizePreviewLink, type LinkPreviewTarget } from "./previewLink";
 import "./link-preview.css";
 
 export type LinkPreviewProps = {

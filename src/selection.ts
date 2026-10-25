@@ -149,7 +149,14 @@ export function connectionTargetAt(items: Item[], point: Point, excluded: string
   });
 }
 
-export function reconnectArrowEndpoint(arrow: Item, items: Item[], endpoint: "from" | "to", point: Point, target?: Item): Item {
+export function reconnectArrowEndpoint(
+  arrow: Item,
+  items: Item[],
+  endpoint: "from" | "to",
+  point: Point,
+  target?: Item,
+  targetPort?: ArrowPort,
+): Item {
   if (arrow.type !== "arrow") return arrow;
   const geometry = arrowGeometry(arrow, items);
   const other = endpoint === "from" ? arrow.to : arrow.from;
@@ -158,10 +165,10 @@ export function reconnectArrowEndpoint(arrow: Item, items: Item[], endpoint: "fr
   let fromPort = arrow.fromPort, toPort = arrow.toPort;
   if (endpoint === "from") {
     from = target?.id;
-    fromPort = target ? portForDirection(target, geometry.end) : undefined;
+    fromPort = target ? targetPort || portForDirection(target, geometry.end) : undefined;
   } else {
     to = target?.id;
-    toPort = target ? portForDirection(target, geometry.start) : undefined;
+    toPort = target ? targetPort || portForDirection(target, geometry.start) : undefined;
   }
   const start = endpoint === "from" ? point : geometry.start;
   const end = endpoint === "to" ? point : geometry.end;
@@ -264,7 +271,11 @@ export function combineSelection(
 }
 export function selectionBounds(items: Item[], ids: string[]): Bounds | null {
   const boxes = items
-    .filter((i) => ids.includes(i.id))
+    .filter((i) =>
+      ids.includes(i.id) &&
+      !i.hidden &&
+      !(i.type === "arrow" && items.some((target) => target.hidden && (target.id === i.from || target.id === i.to))),
+    )
     .map((i) => itemBounds(i, items));
   if (!boxes.length) return null;
   const x = Math.min(...boxes.map((b) => b.x)),

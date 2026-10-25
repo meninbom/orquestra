@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { inflateSync } from "node:zlib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
 function makeAcceptancePdf() {
@@ -38,6 +39,49 @@ function makeAcceptancePdf() {
   xref += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   chunks.push(Buffer.from(xref, "ascii"));
   return Buffer.concat(chunks);
+}
+
+function decodePng(buffer) {
+  assert.equal(buffer.subarray(0, 8).toString("hex"), "89504e470d0a1a0a", "export is a real PNG file");
+  let width, height, bitDepth, colorType;
+  const imageData = [];
+  for (let offset = 8; offset < buffer.length;) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") imageData.push(data);
+    else if (type === "IEND") break;
+    offset += length + 12;
+  }
+  assert.equal(bitDepth, 8, "PNG uses 8-bit channels supported by the export contract test");
+  const channels = ({ 2: 3, 6: 4 })[colorType];
+  assert.ok(channels, `PNG uses RGB/RGBA channels, got ${colorType}`);
+  const stride = width * channels;
+  const packed = inflateSync(Buffer.concat(imageData));
+  const pixels = Buffer.alloc(stride * height);
+  const paeth = (a, b, c) => {
+    const p = a + b - c;
+    const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+    return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+  };
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * (stride + 1);
+    const filter = packed[rowStart];
+    for (let x = 0; x < stride; x++) {
+      const raw = packed[rowStart + x + 1];
+      const left = x >= channels ? pixels[y * stride + x - channels] : 0;
+      const above = y ? pixels[(y - 1) * stride + x] : 0;
+      const upperLeft = y && x >= channels ? pixels[(y - 1) * stride + x - channels] : 0;
+      const predictor = filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? above : filter === 3 ? Math.floor((left + above) / 2) : paeth(left, above, upperLeft);
+      pixels[y * stride + x] = (raw + predictor) & 255;
+    }
+  }
+  return { width, height, channels, stride, pixels };
 }
 
 const PASSWORD_PADDING = Buffer.from([
@@ -282,6 +326,32 @@ export async function testPdfConnectionsFrames({ cdp, run, waitFor, profile }) {
   let arrow = current.items.find((item) => item.type === "arrow");
   assert.equal(arrow.fromPort, "east");
   assert.equal(arrow.toPort, "west");
+  // Clicking an endpoint enters the same exact-port mode as dragging, shows
+  // every eligible destination together, and commits exactly one history step.
+  await selectLayer(arrow.id);
+  const arrowBeforeClickMode = { from: arrow.from, fromPort: arrow.fromPort, to: arrow.to, toPort: arrow.toPort };
+  const fromEndpoint = await centerOf(`[data-item="${arrow.id}"] [data-connector-endpoint="from"]`);
+  await mouse("mousePressed", fromEndpoint);
+  await mouse("mouseReleased", fromEndpoint);
+  await waitFor(() => run('document.querySelectorAll("[data-connection-port]").length>=12'), "clicking the source endpoint reveals all eligible ports");
+  assert.equal(await run(`document.querySelectorAll('[data-item="${target.id}"] [data-connection-port]').length`), 0, "the opposite endpoint's node is excluded from destinations");
+  await writeFile(".qa/connector-all-ports-click-mode.png", Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  const chosenPort = await centerOf(`[data-item="${third.id}"] [data-connection-port="south"]`);
+  await mouse("mousePressed", chosenPort);
+  await mouse("mouseReleased", chosenPort);
+  await waitFor(async () => {
+    const savedArrow = (await scene()).items.find((item) => item.id === arrow.id);
+    return savedArrow?.from === third.id && savedArrow.fromPort === "south";
+  }, "click-to-click reconnect uses the exact selected port");
+  await click(".history button:first-child");
+  await waitFor(async () => {
+    const savedArrow = (await scene()).items.find((item) => item.id === arrow.id);
+    return savedArrow?.from === arrowBeforeClickMode.from && savedArrow.fromPort === arrowBeforeClickMode.fromPort;
+  }, "click-to-click reconnection is one undo step");
+  await click(".history button:nth-child(2)");
+  await waitFor(async () => (await scene()).items.find((item) => item.id === arrow.id)?.fromPort === "south", "click-to-click reconnection redo");
+  await click(".history button:first-child");
+  await waitFor(async () => (await scene()).items.find((item) => item.id === arrow.id)?.fromPort === arrowBeforeClickMode.fromPort, "restore the original connector before the remaining acceptance flow");
   await click(".export-button");
   await click(".dropdown button:nth-child(2)");
   const svgPath = path.join(profile, "exports", "Nova seção.svg");
@@ -625,6 +695,155 @@ export async function testPdfConnectionsFrames({ cdp, run, waitFor, profile }) {
   await click('[aria-label="Fechar PDF"]');
   await waitFor(() => run('!document.querySelector(".pdf-viewer")'), "password PDF viewer closes");
 
+  // Persist an isolated export fixture with an actual image asset and semantic
+  // headings outside the original canvas. Then exercise the real UI exporter
+  // while each editor-only overlay is active.
+  await click(".save-button");
+  await delay(350);
+  const exportLibrary = await run("window.orquestraDesktop.loadLibrary()");
+  const exportProject = exportLibrary.projects.find((project) => project.id === exportLibrary.activeId);
+  const exportSceneIndex = 0;
+  const exportScene = exportProject.board.scenes[exportSceneIndex];
+  assert.ok(exportScene, "the export fixture targets the section persisted by the real Electron app");
+  const iconBytes = await readFile("desktop/icon.png");
+  const iconAssetId = randomUUID();
+  await run(`window.orquestraDesktop.putAsset({id:${JSON.stringify(iconAssetId)},name:"export-contract-icon.png",mime:"image/png",size:${iconBytes.length},data:Uint8Array.from(atob(${JSON.stringify(iconBytes.toString("base64"))}),c=>c.charCodeAt(0))})`);
+  const imageId = randomUUID();
+  const fromId = randomUUID(), toId = randomUUID(), exportArrowId = randomUUID();
+  exportScene.name = "Export bounds contract";
+  exportScene.description = "Título longo para exportação real com quebra de linha, conteúdo semântico preservado e limites verificados além do canvas padrão. Este texto continua por várias linhas para testar o recorte no SVG, PNG e PDF.";
+  exportScene.subtitle = "Subtítulo de exportação visível e preservado além da área original.";
+  exportScene.headingLayout = {
+    name: { x: 1450, y: -150, width: 850, fontSize: 50, align: "left" },
+    description: { x: 80, y: 90, width: 1200, fontSize: 72, align: "left" },
+    subtitle: { x: -360, y: 1210, width: 2500, fontSize: 60, align: "center" },
+  };
+  exportScene.items.push({
+    id: imageId, type: "image", x: -400, y: 1480, w: 200, h: 160,
+    text: "Imagem de prova de exportação", color: "#8fe3b5", fill: "transparent", size: 24,
+    step: 0, animation: "fade", assetId: iconAssetId, assetName: "export-contract-icon.png",
+    assetMime: "image/png", mediaFit: "contain",
+  });
+  exportScene.items.push(
+    { id: fromId, type: "rect", x: 100, y: 180, w: 120, h: 80, text: "Export source", color: "#8fe3b5", fill: "transparent", size: 24, step: 0, animation: "fade" },
+    { id: toId, type: "rect", x: 380, y: 180, w: 120, h: 80, text: "Export target", color: "#85b9e2", fill: "transparent", size: 24, step: 0, animation: "fade" },
+    { id: exportArrowId, type: "arrow", x: 220, y: 220, w: 160, h: 0, text: "", color: "#8fe3b5", fill: "transparent", size: 24, step: 0, animation: "fade", from: fromId, to: toId, fromPort: "east", toPort: "west" },
+  );
+  await run(`window.orquestraDesktop.saveLibrary(${JSON.stringify(exportLibrary)})`);
+  await run("window.__exportFixtureReload = true");
+  await cdp("Page.reload");
+  await waitFor(() => run('!window.__exportFixtureReload && !!document.querySelector(".document-title") && !document.querySelector(".pdf-viewer")'), "editor reloads the real SVG/PNG/PDF export fixture");
+  await waitFor(() => run(`window.orquestraDesktop.loadLibrary().then(l=>l.projects.find(p=>p.id===l.activeId).board.scenes[${exportSceneIndex}].items.some(i=>i.id===${JSON.stringify(imageId)}))`), "real image asset fixture survives reload");
+  await waitFor(async () => (await scene()).id === exportScene.id, "default active section is the export fixture after reload");
+  await waitFor(() => run(`!!document.querySelector('[data-item="${imageId}"] image[data-asset]')`), "real image is painted inside the fitted section");
+  // Earlier acceptance steps leave the shared view panned; frame this fixture
+  // section so every relocated heading is reachable in the 800x600 viewport.
+  await click('button[title="Enquadrar seção (0)"]');
+  await waitFor(() => run(`(()=>{const e=document.querySelector('[data-scene-heading="description"]');if(!e)return false;const r=e.getBoundingClientRect();return r.width>40&&r.height>8&&r.left>0&&r.top>0&&r.right<innerWidth&&r.bottom<innerHeight})()`), "wrapped heading is framed inside the real canvas viewport before selection");
+
+  const exportPath = (extension) => path.join(profile, "exports", `${exportScene.name}.${extension}`);
+  const exportSection = async (format) => {
+    const filename = format === "board-pdf"
+      ? path.join(profile, "exports", `${(await run('document.querySelector(".document-title").value')).replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").trim().slice(0, 100) || "Orquestra"}.pdf`)
+      : exportPath(format);
+    await unlink(filename).catch(() => {});
+    await click(".export-button");
+    await click(`.dropdown button:nth-child(${format === "svg" ? 2 : format === "png" ? 3 : 4})`);
+    await waitFor(async () => {
+      try { return (await readFile(filename)).length > 0; } catch { return false; }
+    }, `real ${format} export with active editor controls`, 30000);
+    return readFile(filename);
+  };
+  const assertNoEditorOverlays = (markup, label) => {
+    for (const helper of [
+      "data-selection=", "data-selection-transform=", "data-selection-resize=", "data-alignment-guide=",
+      "data-scene-heading-selection=", "data-scene-heading-resize=", "data-connection-ports=",
+      "data-connection-port=", "data-connection-target=", "data-connection-target-port=",
+      "data-connector-preview=", "data-connector-endpoint=", "data-connector-handles=",
+    ]) assert.equal(markup.includes(helper), false, `${label} excludes ${helper}`);
+  };
+  const assertExpandedViewBox = (markup, label) => {
+    const viewBox = markup.match(/viewBox="([^"]+)"/)?.[1].split(/\s+/).map(Number);
+    assert.ok(viewBox && viewBox.length === 4, `${label} contains a finite SVG frame`);
+    const [x, y, width, height] = viewBox;
+    assert.ok([x, y, width, height].every(Number.isFinite), `${label} viewBox contains only finite bounds`);
+    assert.ok(x <= -400 && y <= -150 && x + width > 2400 && y + height > 1600, `${label} viewBox covers the real image, relocated headers, and subtitle ornament`);
+    const subtitleLayout = exportScene.headingLayout.subtitle;
+    const underlineRight = subtitleLayout.x + 810 * subtitleLayout.width / 720;
+    assert.ok(x + width > underlineRight + 20, `${label} viewBox includes the subtitle underline beyond the configured width`);
+  };
+  await selectLayer(fromId);
+  await clickItem(toId, 2);
+  try {
+    await waitFor(() => run('!!document.querySelector("[data-selection-transform]") && document.querySelectorAll("[data-selection-resize]").length===8'), "real collective-selection frame and all eight handles are active before SVG/PNG export");
+  } catch (error) {
+    console.error("Collective export selection diagnostics", JSON.stringify(await run(`({selected:[...document.querySelectorAll('[data-item][data-selected=true]')].map(e=>e.dataset.item),handles:document.querySelectorAll('[data-selection-resize]').length,frame:!!document.querySelector('[data-selection-transform]'),items:[${JSON.stringify(fromId)},${JSON.stringify(toId)}].map(id=>{const e=document.querySelector('[data-item="'+id+'"]');return{id,rect:e?.getBoundingClientRect().toJSON()}}),viewport:{w:innerWidth,h:innerHeight},scene:document.querySelector('.scene-controls span')?.textContent,tool:document.querySelector('.toolbar .active')?.getAttribute('aria-label'),side:!!document.querySelector('.aside-tabs')})`)));
+    await writeFile(".qa/export-collective-selection-debug.png", Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+    throw error;
+  }
+  const collectiveSvg = (await exportSection("svg")).toString("utf8");
+  assertNoEditorOverlays(collectiveSvg, "SVG with collective selection active");
+  assertExpandedViewBox(collectiveSvg, "live SVG");
+  assert.ok(collectiveSvg.includes(`data-item="${imageId}"`) && collectiveSvg.includes("data:image/png;base64,"), "live SVG preserves the actual embedded image and its content while dropping transform handles");
+  assert.ok(collectiveSvg.toLocaleUpperCase().includes("EXPORT BOUNDS") && collectiveSvg.includes("CONTRACT") && collectiveSvg.includes("Título longo"), "live SVG preserves semantic section headings and item content across rendered line breaks");
+  await writeFile(".qa/export-active-collective.svg", collectiveSvg, "utf8");
+
+  const pngBytes = await exportSection("png");
+  const decodedPng = decodePng(pngBytes);
+  assert.deepEqual([decodedPng.width, decodedPng.height], [1440, 1000], "real PNG export keeps the requested raster dimensions");
+  const backgroundOffset = 0;
+  const background = [...decodedPng.pixels.subarray(backgroundOffset, backgroundOffset + decodedPng.channels)];
+  let painted = 0;
+  for (let y = 0; y < decodedPng.height; y += 2) for (let x = 0; x < decodedPng.width; x += 2) {
+    const offset = y * decodedPng.stride + x * decodedPng.channels;
+    if (Math.abs(decodedPng.pixels[offset] - background[0]) + Math.abs(decodedPng.pixels[offset + 1] - background[1]) + Math.abs(decodedPng.pixels[offset + 2] - background[2]) > 35) painted++;
+  }
+  assert.ok(painted > 10000, `real PNG contains rendered content, image and headings rather than only its background (${painted} sampled painted pixels)`);
+  await writeFile(".qa/export-active-collective.png", pngBytes);
+
+  const headingPoint = await run(`(()=>{const e=document.querySelector('[data-scene-heading="description"]');if(!e)return null;const r=e.getBoundingClientRect();for(let y=r.top+3;y<r.bottom-2;y+=4)for(let x=r.left+3;x<r.right-2;x+=4){const hit=document.elementFromPoint(x,y);if(hit&&hit.closest('[data-scene-heading="description"]'))return{x,y,rect:r.toJSON(),viewport:{w:innerWidth,h:innerHeight}}}return{rect:r.toJSON(),blocked:document.elementFromPoint(r.left+6,r.top+6)?.outerHTML?.slice(0,140)||null,viewport:{w:innerWidth,h:innerHeight}}})()`);
+  assert.ok(headingPoint && Number.isFinite(headingPoint.x) && headingPoint.x > 0 && headingPoint.x < 800 && headingPoint.y > 0 && headingPoint.y < 600, `the semantic heading has an unobstructed glyph hit point after fit: ${JSON.stringify(headingPoint)}`);
+  await mouse("mousePressed", headingPoint);
+  await mouse("mouseReleased", headingPoint);
+  await waitFor(() => run('!!document.querySelector("[data-scene-heading-selection=description]") && !!document.querySelector("[data-scene-heading-resize=description]")'), "real semantic heading selection and resize handle are active before SVG export");
+  const headingSvg = (await exportSection("svg")).toString("utf8");
+  assertNoEditorOverlays(headingSvg, "SVG with a semantic heading selected");
+  assertExpandedViewBox(headingSvg, "heading-selected live SVG");
+  assert.ok(headingSvg.includes('data-scene-heading="description"') && headingSvg.includes("Título longo"), "heading text is preserved while only its selection box/resize handle are removed");
+
+  await selectLayer(exportArrowId);
+  const exportEndpoint = await centerOf(`[data-item="${exportArrowId}"] [data-connector-endpoint="from"]`);
+  await mouse("mousePressed", exportEndpoint);
+  await mouse("mouseReleased", exportEndpoint);
+  await waitFor(() => run('document.querySelectorAll("[data-connection-port]").length>=4'), "real endpoint-edit mode exposes candidate ports before export");
+  const endpointSvg = (await exportSection("svg")).toString("utf8");
+  assertNoEditorOverlays(endpointSvg, "SVG with endpoint mode and candidate ports active");
+  assert.ok(endpointSvg.includes("marker-end=") && endpointSvg.includes("data:image/png;base64,"), "endpoint-mode SVG keeps the actual connector and image content");
+  assertExpandedViewBox(endpointSvg, "endpoint-mode live SVG");
+  await writeFile(".qa/export-active-endpoint.svg", endpointSvg, "utf8");
+
+  const pdfBytes = await exportSection("board-pdf");
+  assert.equal(pdfBytes.subarray(0, 5).toString("ascii"), "%PDF-", "real board export is a PDF document");
+  const exportPdf = await pdfjs.getDocument({ data: new Uint8Array(pdfBytes) }).promise;
+  const exportPage = await exportPdf.getPage(exportSceneIndex + 1);
+  const exportText = (await exportPage.getTextContent()).items.filter((entry) => "str" in entry).map((entry) => entry.str).join(" ");
+  await writeFile(".qa/export-expanded-board.pdf", pdfBytes);
+  const normalizedExportText = exportText.toLocaleUpperCase();
+  assert.ok(normalizedExportText.includes("E X P O R T B O U N D S") && normalizedExportText.includes("C O N T R A C T"), `the actual PDF page retains the DM Sans section name placed outside the legacy canvas: ${exportText}`);
+  assert.ok(exportText.includes("Títu") && exportText.includes("Sub"), `the actual PDF page retains the handwriting heading/subtitle starts (their subset font cannot expose every glyph to text extraction): ${exportText}`);
+  const exportOperatorList = await exportPage.getOperatorList();
+  const operationNames = Object.fromEntries(Object.entries(pdfjs.OPS).map(([name, value]) => [value, name]));
+  const pathBounds = exportOperatorList.argsArray
+    .map((args, index) => ({ name: operationNames[exportOperatorList.fnArray[index]], args }))
+    .filter((entry) => entry.name === "constructPath")
+    .map((entry) => ({ points: entry.args[1]?.[0], bounds: entry.args[2] }));
+  const liveViewBox = collectiveSvg.match(/viewBox="([^"]+)"/)?.[1].split(/\s+/).map(Number);
+  assert.ok(liveViewBox && pathBounds.some(({ bounds }) => bounds && Math.abs(bounds[0] - liveViewBox[0]) < 0.02 && Math.abs(bounds[1] - liveViewBox[1]) < 0.02 && Math.abs(bounds[2] - (liveViewBox[0] + liveViewBox[2])) < 0.02 && Math.abs(bounds[3] - (liveViewBox[1] + liveViewBox[3])) < 0.02), "the real PDF embeds the full live SVG frame instead of the legacy crop");
+  const underlinePoint = pathBounds.find(({ bounds }) => bounds && bounds[2] > 2400 && bounds[3] > 1000 && bounds[3] < 1300);
+  assert.ok(underlinePoint, "the real PDF contains the off-canvas subtitle underline vector");
+  assert.ok(exportOperatorList.fnArray.includes(pdfjs.OPS.paintImageXObject), "the real PDF paints the embedded test image");
+  assert.ok(exportOperatorList.fnArray.length > 100, "the actual PDF page contains rendered vector/image operators, including the off-canvas ornament and image");
+
   await cdp("Emulation.clearDeviceMetricsOverride");
   await frame();
   return {
@@ -632,6 +851,7 @@ export async function testPdfConnectionsFrames({ cdp, run, waitFor, profile }) {
     selectionCenters: { openSingle, closedSingle, openMultiple, closedMultiple },
     connectorGestureZooms: [0.48, 2.07],
     connectorPreviewTargetPort: true,
+    connectorClickToClickExactPortAndSingleUndo: true,
     connectorCreatedReconnectedDisconnected: true,
     sourceMoveResize: true,
     connectorMoveResize: true,
@@ -646,6 +866,10 @@ export async function testPdfConnectionsFrames({ cdp, run, waitFor, profile }) {
     pdfMissingAssetRecoveryMessage: true,
     pdfCorruptFileRecoveryMessage: true,
     pdfPasswordPromptWrongPasswordAndCorrectPassword: true,
+    exportHelpersRemovedWithCollectiveHeadingAndEndpointSelections: true,
+    exportImageAndSemanticContentPreserved: true,
+    liveSvgPngPdfShareExpandedHeaderAndOrnamentBounds: true,
+    pngDecodedPaintedPixels: painted,
     runtimeErrors,
   };
 }

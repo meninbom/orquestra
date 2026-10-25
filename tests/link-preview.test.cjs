@@ -4,7 +4,7 @@ const fs = require("node:fs/promises");
 const { transform } = require("esbuild");
 
 const modulePromise = (async () => {
-  const source = await fs.readFile("src/linkPreview.ts", "utf8");
+  const source = await fs.readFile("src/previewLink.ts", "utf8");
   const { code } = await transform(source, { loader: "ts", format: "esm" });
   return import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 })();

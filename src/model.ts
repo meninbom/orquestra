@@ -96,10 +96,20 @@ export type Scene = {
   name: string;
   description: string;
   subtitle?: string;
+  /** Optional canvas layout for semantic section headings; absent keeps the v1.5 layout. */
+  headingLayout?: Partial<Record<SceneHeadingField, SceneHeadingFieldLayout>>;
   items: Item[];
   duration: number;
   transition?: Transition;
   transitionMs?: number;
+};
+export type SceneHeadingField = "name" | "description" | "subtitle";
+export type SceneHeadingFieldLayout = {
+  x: number;
+  y: number;
+  width: number;
+  fontSize: number;
+  align?: "left" | "center" | "right";
 };
 export type Board = {
   version: 1;
@@ -358,6 +368,22 @@ export function validBoard(d: unknown): d is Board {
         typeof s.name === "string" &&
         typeof s.description === "string" &&
         (s.subtitle === undefined || typeof s.subtitle === "string") &&
+        (s.headingLayout === undefined ||
+          (!!s.headingLayout &&
+            typeof s.headingLayout === "object" &&
+            !Array.isArray(s.headingLayout) &&
+            Object.entries(s.headingLayout).every(([field, layout]) =>
+              ["name", "description", "subtitle"].includes(field) &&
+              !!layout &&
+              [layout.x, layout.y, layout.width, layout.fontSize].every(Number.isFinite) &&
+              Math.abs(layout.x) <= 50000 &&
+              Math.abs(layout.y) <= 50000 &&
+              layout.width >= 24 &&
+              layout.width <= 20000 &&
+              layout.fontSize >= 8 &&
+              layout.fontSize <= 240 &&
+              (layout.align === undefined || ["left", "center", "right"].includes(layout.align)),
+            ))) &&
         Number.isFinite(s.duration) &&
         s.duration >= 2 &&
         s.duration <= 30 &&

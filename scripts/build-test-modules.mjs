@@ -33,6 +33,11 @@ for (const [entry, outfile] of [
   ["src/templates.ts", ".qa/templates.cjs"],
   ["src/versions.ts", ".qa/versions.cjs"],
   ["src/textLayout.ts", ".qa/textLayout.cjs"],
+  ["src/connectionTargets.ts", ".qa/connection-targets.cjs"],
+  ["src/selectionTransform.ts", ".qa/selection-transform.cjs"],
+  ["src/sectionHeadingLayout.ts", ".qa/section-heading-layout.cjs"],
+  ["src/sceneBounds.ts", ".qa/scene-bounds.cjs"],
+  ["src/svgExport.ts", ".qa/svg-export.cjs"],
 ]) {
   await build({ entryPoints: [entry], bundle: true, platform: "node", format: "cjs", outfile, target: "node22" });
 }
