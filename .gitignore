@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+release/
+desktop/library.cjs
+.qa/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+coverage/
