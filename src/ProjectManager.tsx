@@ -11,6 +11,7 @@ import {
   Search,
   Check,
   Folder,
+  Clock3,
 } from "lucide-react";
 import {
   type Library,
@@ -22,7 +23,7 @@ import {
 } from "./library";
 
 import { importPayload } from "./media";
-import { transitions, type Transition } from "./model";
+import { transitions, type Transition, uid } from "./model";
 import { transitionLabels } from "./AnimationControls";
 type Props = {
   library: Library;
@@ -32,6 +33,7 @@ type Props = {
   onBackup(): void;
   onOpen(id: string): void;
   notify(message: string): void;
+  onVersions(id: string): void;
 };
 export function ProjectManager({
   library,
@@ -41,6 +43,7 @@ export function ProjectManager({
   onBackup,
   onOpen,
   notify,
+  onVersions,
 }: Props) {
   const [query, setQuery] = useState(""),
     [name, setName] = useState(""),
@@ -89,6 +92,7 @@ export function ProjectManager({
     const n = makeProject(p.board.title + " — cópia");
     n.board = cloneBoard(p.board);
     n.board.title += " — cópia";
+    n.styles = p.styles?.map((style) => ({ ...style, id: uid() }));
     onChange({ ...library, projects: [...library.projects, n] });
     notify("Cópia criada");
   };
@@ -143,6 +147,7 @@ export function ProjectManager({
               {projects.map((p) => (
                 <article
                   className={`project-row ${p.id === library.activeId ? "current" : ""}`}
+                  data-project={p.id}
                   key={p.id}
                 >
                   <input
@@ -183,6 +188,14 @@ export function ProjectManager({
                         )}
                       </small>
                     </span>
+                  </button>
+                  <button
+                    className="icon-button"
+                    title={`Histórico de versões de ${p.board.title}`}
+                    aria-label={`Histórico de versões de ${p.board.title}`}
+                    onClick={() => onVersions(p.id)}
+                  >
+                    <Clock3 size={15} />
                   </button>
                   <button
                     className="icon-button"

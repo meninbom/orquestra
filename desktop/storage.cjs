@@ -3,14 +3,15 @@ const path = require("node:path");
 const { validLibrary } = require("./library.cjs");
 
 class LibraryStore {
-  constructor(directory) {
+  constructor(directory, fileSystem = fs) {
+    this.fs = fileSystem;
     this.directory = directory;
     this.file = path.join(directory, "biblioteca.json");
     this.queue = Promise.resolve();
   }
   async load() {
     try {
-      const parsed = JSON.parse(await fs.readFile(this.file, "utf8"));
+      const parsed = JSON.parse(await this.fs.readFile(this.file, "utf8"));
       if (!validLibrary(parsed))
         throw new Error("Formato da biblioteca inválido.");
       return parsed;
@@ -29,9 +30,9 @@ class LibraryStore {
     const operation = this.queue
       .catch(() => {})
       .then(async () => {
-        await fs.mkdir(this.directory, { recursive: true });
+        await this.fs.mkdir(this.directory, { recursive: true });
         const temporary = this.file + ".tmp";
-        const handle = await fs.open(temporary, "w");
+        const handle = await this.fs.open(temporary, "w");
         try {
           await handle.writeFile(snapshot, "utf8");
           await handle.sync();
@@ -40,11 +41,21 @@ class LibraryStore {
         }
         // Preserve the previous valid version before replacing the current library.
         try {
-          await fs.copyFile(this.file, this.file + ".bak");
+          await this.fs.copyFile(this.file, this.file + ".bak");
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
-        await fs.rename(temporary, this.file);
+        // Windows readers/indexers can briefly hold the destination open.
+        // Keep the old library in place; retry the atomic rename, never unlink it.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await this.fs.rename(temporary, this.file);
+            break;
+          } catch (error) {
+            if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 5) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+          }
+        }
       });
     this.queue = operation;
     return operation;

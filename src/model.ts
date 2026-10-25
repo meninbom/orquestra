@@ -75,7 +75,22 @@ export type Item = {
   points?: number[][];
   from?: string;
   to?: string;
+  /** Optional fixed ports for connectors; old boards use automatic side selection. */
+  fromPort?: ArrowPort;
+  toPort?: ArrowPort;
+  /** Stable organization metadata; absent on boards created before v1.4. */
+  name?: string;
+  groupId?: string;
+  locked?: boolean;
+  hidden?: boolean;
+  bold?: boolean;
+  italic?: boolean;
+  textAlign?: "left" | "center" | "right";
+  lineHeight?: number;
+  autoHeight?: boolean;
 };
+export type ArrowPort = "north" | "east" | "south" | "west";
+export const arrowPorts: ArrowPort[] = ["north", "east", "south", "west"];
 export type Scene = {
   id: string;
   name: string;
@@ -86,7 +101,16 @@ export type Scene = {
   transition?: Transition;
   transitionMs?: number;
 };
-export type Board = { version: 1; title: string; scenes: Scene[] };
+export type Board = {
+  version: 1;
+  title: string;
+  scenes: Scene[];
+  settings?: {
+    snapToGrid?: boolean;
+    alignmentGuides?: boolean;
+    gridSize?: number;
+  };
+};
 export const defaultSectionSubtitle =
   "Um orquestrador conecta as peças. Cada agente faz o que sabe melhor.";
 export const colors = [
@@ -300,12 +324,29 @@ const validHttps = (value: unknown) => {
     return false;
   }
 };
+function validGroupMembership(items: Item[]): boolean {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.groupId) counts.set(item.groupId, (counts.get(item.groupId) || 0) + 1);
+  }
+  return items.every((item) => !item.groupId || (counts.get(item.groupId) || 0) >= 2);
+}
+
 export function validBoard(d: unknown): d is Board {
   const b = d as Board;
   return (
     !!b &&
     b.version === 1 &&
     typeof b.title === "string" &&
+    (!b.settings ||
+      ((b.settings.snapToGrid === undefined ||
+        typeof b.settings.snapToGrid === "boolean") &&
+        (b.settings.alignmentGuides === undefined ||
+          typeof b.settings.alignmentGuides === "boolean") &&
+        (b.settings.gridSize === undefined ||
+          (Number.isFinite(b.settings.gridSize) &&
+            b.settings.gridSize >= 4 &&
+            b.settings.gridSize <= 200)))) &&
     Array.isArray(b.scenes) &&
     b.scenes.length > 0 &&
     b.scenes.length <= 200 &&
@@ -377,6 +418,10 @@ export function validBoard(d: unknown): d is Board {
               ].includes(i.arrowMotion)) &&
             (i.arrowStyle === undefined ||
               ["solid", "dashed", "dotted"].includes(i.arrowStyle)) &&
+            (i.fromPort === undefined ||
+              (i.type === "arrow" && arrowPorts.includes(i.fromPort))) &&
+            (i.toPort === undefined ||
+              (i.type === "arrow" && arrowPorts.includes(i.toPort))) &&
             (i.type !== "icon" || typeof i.icon === "string") &&
             (!["image", "video", "audio", "file"].includes(i.type) ||
               (typeof i.assetId === "string" &&
@@ -399,6 +444,19 @@ export function validBoard(d: unknown): d is Board {
                 i.fillOpacity >= 0 &&
                 i.fillOpacity <= 1)) &&
             (i.fontFamily === undefined || fontFamilies.includes(i.fontFamily)) &&
+            (i.name === undefined ||
+              (typeof i.name === "string" && i.name.length <= 200)) &&
+            (i.groupId === undefined ||
+              (typeof i.groupId === "string" && i.groupId.length <= 80)) &&
+            [i.locked, i.hidden, i.bold, i.italic, i.autoHeight].every(
+              (v) => v === undefined || typeof v === "boolean",
+            ) &&
+            (i.textAlign === undefined ||
+              ["left", "center", "right"].includes(i.textAlign)) &&
+            (i.lineHeight === undefined ||
+              (Number.isFinite(i.lineHeight) &&
+                i.lineHeight >= 0.7 &&
+                i.lineHeight <= 3)) &&
             (!i.points ||
               (Array.isArray(i.points) &&
                 i.points.every(
@@ -407,7 +465,8 @@ export function validBoard(d: unknown): d is Board {
                     p.length === 2 &&
                     p.every(Number.isFinite),
                 ))),
-        ),
+        ) &&
+        validGroupMembership(s.items),
     )
   );
 }

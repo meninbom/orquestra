@@ -5,6 +5,12 @@ contextBridge.exposeInMainWorld("orquestraDesktop", {
   openLink: (url) => ipcRenderer.invoke("link:open", url),
   loadLibrary: () => ipcRenderer.invoke("library:load"),
   saveLibrary: (value) => ipcRenderer.invoke("library:save", value),
+  listVersions: (projectId) => ipcRenderer.invoke("versions:list", projectId),
+  saveVersion: (version) => ipcRenderer.invoke("versions:save", version),
+  deleteVersion: (projectId, versionId) =>
+    ipcRenderer.invoke("versions:delete", projectId, versionId),
+  exportBoardPdf: (title, pages) =>
+    ipcRenderer.invoke("pdf:export-board", title, pages),
   saveFile: (name, data) => ipcRenderer.invoke("file:save", name, data),
   dataFolder: () => ipcRenderer.invoke("library:folder"),
   onRequestClose: (callback) => {

@@ -8,6 +8,9 @@ import assert from "node:assert/strict";
 import electron from "electron";
 
 const sourceMode = process.env.ORQUESTRA_TEST_SOURCE === "1";
+const linkOnly = process.env.ORQUESTRA_TEST_LINK_ONLY === "1";
+const pdfOnly = process.env.ORQUESTRA_TEST_PDF_ONLY === "1";
+const needsMainInspector = linkOnly || !pdfOnly;
 const executable = sourceMode
   ? electron
   : path.resolve(
@@ -18,6 +21,13 @@ const probe = net.createServer();
 await new Promise((r) => probe.listen(0, "127.0.0.1", r));
 const port = probe.address().port;
 await new Promise((r) => probe.close(r));
+let inspectPort;
+if (needsMainInspector) {
+  const inspectProbe = net.createServer();
+  await new Promise((r) => inspectProbe.listen(0, "127.0.0.1", r));
+  inspectPort = inspectProbe.address().port;
+  await new Promise((r) => inspectProbe.close(r));
+}
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 const child = spawn(
@@ -26,12 +36,17 @@ const child = spawn(
     ...(sourceMode ? ["."] : []),
     `--remote-debugging-port=${port}`,
     `--orquestra-test-data=${profile}`,
+    ...(needsMainInspector ? [`--inspect=127.0.0.1:${inspectPort}`] : []),
   ],
   { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
 );
 let ws,
   id = 0;
+let mainWs,
+  mainId = 0;
 const pending = new Map();
+const pendingMain = new Map();
+const cdpEvents = [];
 const cdp = (method, params = {}) =>
   new Promise((resolve, reject) => {
     const key = ++id;
@@ -53,8 +68,28 @@ const run = async (expression) => {
     throw new Error(JSON.stringify(result.exceptionDetails));
   return result.result.value;
 };
-async function waitFor(fn, label) {
-  for (let n = 0; n < 120; n++) {
+const mainCdp = (method, params = {}) =>
+  new Promise((resolve, reject) => {
+    const key = ++mainId;
+    const timer = setTimeout(() => {
+      pendingMain.delete(key);
+      reject(new Error("Main-process CDP timeout: " + method));
+    }, 30000);
+    pendingMain.set(key, { resolve, reject, timer });
+    mainWs.send(JSON.stringify({ id: key, method, params }));
+  });
+const mainRun = async (expression) => {
+  const result = await mainCdp("Runtime.evaluate", {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (result.exceptionDetails)
+    throw new Error(JSON.stringify(result.exceptionDetails));
+  return result.result.value;
+};
+async function waitFor(fn, label, timeoutMs = 12000) {
+  for (let n = 0; n < Math.ceil(timeoutMs / 100); n++) {
     try {
       const v = await fn();
       if (v) return v;
@@ -86,12 +121,57 @@ try {
       message.error
         ? task.reject(new Error(JSON.stringify(message.error)))
         : task.resolve(message.result);
+    } else if (message.method) {
+      cdpEvents.push(message);
     }
   };
   await waitFor(
     () => run('!!document.querySelector(".projects-trigger")'),
     "packaged editor",
   );
+  async function connectMainInspector() {
+    const target = await waitFor(async () => {
+      const list = await (await fetch(`http://127.0.0.1:${inspectPort}/json/list`)).json();
+      return list.find((entry) => entry.type === "node" && entry.webSocketDebuggerUrl);
+    }, "Electron main-process inspector");
+    mainWs = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      mainWs.onopen = resolve;
+      mainWs.onerror = reject;
+    });
+    mainWs.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      const task = pendingMain.get(message.id);
+      if (!task) return;
+      pendingMain.delete(message.id);
+      clearTimeout(task.timer);
+      message.error
+        ? task.reject(new Error(JSON.stringify(message.error)))
+        : task.resolve(message.result);
+    };
+    return mainWs;
+  }
+  if (linkOnly) {
+    await connectMainInspector();
+    const { testLinkPreview } = await import("../tests/link-preview-flow.mjs");
+    const evidence = await testLinkPreview({
+      cdp,
+      run,
+      waitFor,
+      profile,
+      cdpEvents,
+      mainRun,
+      youtubePlayback: process.env.ORQUESTRA_TEST_YOUTUBE_PLAYBACK === "1",
+    });
+    await mkdir(".qa", { recursive: true });
+    await writeFile(".qa/link-preview-flow.json", JSON.stringify({ passed: true, evidence }, null, 2));
+    console.log(JSON.stringify({ passed: true, linkPreview: evidence }, null, 2));
+  } else if (pdfOnly) {
+    const { testPdfConnectionsFrames } = await import("../tests/acceptance-flow.mjs");
+    const evidence = await testPdfConnectionsFrames({ cdp, run, waitFor, profile });
+    await writeFile(".qa/pdf-connections-frames-flow.json", JSON.stringify({ passed: true, evidence }, null, 2));
+    console.log(JSON.stringify({ passed: true, pdfConnectionsFrames: evidence }, null, 2));
+  } else {
   await run("document.fonts.ready.then(()=>true)");
   const initial = await run(
     '({desktop:!!window.orquestraDesktop,node:typeof window.require,fonts:[...document.fonts].map(f=>f.status),title:document.title,projects:document.querySelector(".document-title").value})',
@@ -420,6 +500,22 @@ try {
   await delay(650);
   const { testSelection } = await import("../tests/selection-flow.mjs");
   const selectionEvidence = await testSelection({ cdp, run, waitFor });
+  const { testFeatures } = await import("../tests/features-flow.mjs");
+  const featureEvidence = await testFeatures({ cdp, run, waitFor, profile });
+  const { testPdfConnectionsFrames } = await import("../tests/acceptance-flow.mjs");
+  const pdfConnectionsFramesEvidence = await testPdfConnectionsFrames({ cdp, run, waitFor, profile });
+  await connectMainInspector();
+  const { testLinkPreview } = await import("../tests/link-preview-flow.mjs");
+  const linkPreviewEvidence = await testLinkPreview({
+    cdp,
+    run,
+    waitFor,
+    profile,
+    cdpEvents,
+    mainRun,
+    youtubePlayback: process.env.ORQUESTRA_TEST_YOUTUBE_PLAYBACK === "1",
+  });
+  await writeFile(".qa/link-preview-flow.json", JSON.stringify({ passed: true, evidence: linkPreviewEvidence }, null, 2));
   const boardShot = await cdp("Page.captureScreenshot", { format: "png" });
   await writeFile(
     ".qa/windows-media-board.png",
@@ -458,7 +554,7 @@ try {
     Buffer.from(screenshot.data, "base64"),
   );
   const disk = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(disk.projects.length, 2);
+  assert.equal(disk.projects.length, 6);
   await writeFile(
     ".qa/packaged-smoke.json",
     JSON.stringify(
@@ -470,6 +566,9 @@ try {
         persistence: true,
         media: mediaEvidence,
         selection: selectionEvidence,
+        features: featureEvidence,
+        pdfConnectionsFrames: pdfConnectionsFramesEvidence,
+        linkPreview: linkPreviewEvidence,
         sectionHeadingEditing: true,
         sectionSubtitleEditing: true,
         sectionSubtitlePersistence: true,
@@ -488,15 +587,19 @@ try {
       projects: disk.projects.length,
       persistence: true,
       media: mediaEvidence,
+      pdfConnectionsFrames: pdfConnectionsFramesEvidence,
+      linkPreview: linkPreviewEvidence,
       sectionHeadingEditing: true,
       sectionSubtitleEditing: true,
       sectionSubtitlePersistence: true,
     }),
   );
+  }
   await run("window.close()").catch(() => {});
   await Promise.race([new Promise((r) => child.once("exit", r)), delay(5000)]);
 } finally {
   ws?.close();
+  mainWs?.close();
   if (child.exitCode === null) child.kill();
   await delay(500);
   if (

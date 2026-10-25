@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
+import { renderBoardPages } from "./boardExport";
 import {
   MousePointer2,
   Hand,
@@ -43,6 +44,7 @@ import {
   MousePointerClick,
   BringToFront,
   SendToBack,
+  Layers,
 } from "lucide-react";
 import {
   type Board,
@@ -52,12 +54,20 @@ import {
   colors,
   defaultSectionSubtitle,
   uid,
+  type ArrowPort,
   type Transition,
 } from "./model";
-import { type Library } from "./library";
+import {
+  type BoardTemplate,
+  type Library,
+  type SavedStyle,
+  type Project,
+} from "./library";
 import { InsertPanel } from "./InsertPanel";
 import { iconByName, iconCatalog } from "./icons";
 import { BoardMedia } from "./BoardMedia";
+import { PdfViewer } from "./PdfViewer";
+import { LinkPreview } from "./LinkPreview.tsx";
 import { ArrowVisual } from "./ArrowVisual";
 import { AnimationControls, TransitionControls } from "./AnimationControls";
 import {
@@ -68,6 +78,7 @@ import {
   blobData,
   portablePayload,
   importPayload,
+  openLink,
 } from "./media";
 import { readLibrary, writeLibrary } from "./persistence";
 import { ProjectManager } from "./ProjectManager";
@@ -79,12 +90,27 @@ import {
   rectangle,
   arrowGeometry,
   itemBounds,
+  connectionTargetAt,
+  portAnchor,
+  portForDirection,
+  reconnectArrowEndpoint,
   itemsInArea,
   combineSelection,
   selectionBounds,
   translateSelection,
   copySelection,
+  frameTitleHeight,
 } from "./selection";
+import { editableSelection, expandGroupIds, groupItems, itemSelection, setItemHidden, setItemLocked, ungroupItems } from "./groups";
+import { alignItems, distributeItems, snapPoint, type Alignment, type Distribution, type Guide } from "./arrangement";
+import { applySavedStyle, styleProperties } from "./styles";
+import { builtInTemplates, insertTemplateScene, saveSceneAsTemplate } from "./templates";
+import { autoHeightFor, wrapItemText } from "./textLayout";
+import { makeProjectVersion, type ProjectVersion, validProjectVersion } from "./versions";
+import { persistProjectVersion, listProjectVersions } from "./versionStorage";
+import { VersionManager } from "./VersionManager";
+import { LayerPanel } from "./LayerPanel";
+import { ConfirmDialog, NameDialog } from "./ActionDialog";
 import "./style.css";
 
 const tools: { id: Tool; label: string; key: string; icon: typeof Square }[] = [
@@ -141,23 +167,26 @@ const fontGroups: { label: string; families: NonNullable<Item["fontFamily"]>[] }
 const itemTextColor = (i: Item) =>
   i.textColor ?? (i.type === "note" ? "#19342a" : i.color);
 function wrapText(i: Item): string[] {
-  const max = i.w - (i.type === "agent" ? 94 : 32);
-  return i.text.split("\n").flatMap((line, n) => {
-    measure.font = `500 ${i.type === "agent" && n ? i.size * 0.72 : i.size}px ${fontStacks[i.fontFamily || "Caveat"]}`;
-    const words = line.split(" "),
-      rows: string[] = [];
-    let row = "";
-    for (const word of words) {
-      const next = row ? row + " " + word : word;
-      if (row && measure.measureText(next).width > max) {
-        rows.push(row);
-        row = word;
-      } else row = next;
-    }
-    rows.push(row);
-    return rows;
-  });
+  return wrapItemText(
+    i,
+    (text, font) => {
+      measure.font = font;
+      return measure.measureText(text).width;
+    },
+    fontStacks[i.fontFamily || "Caveat"],
+  );
 }
+function withAutoHeight(item: Item, values: Partial<Item>): Item {
+  const next = { ...item, ...values };
+  const layoutChanged = ["text", "size", "bold", "italic", "fontFamily", "lineHeight", "autoHeight"].some((key) => key in values);
+  return next.autoHeight && layoutChanged
+    ? { ...next, h: autoHeightFor(next, wrapText(next).length) }
+    : next;
+}
+
+type ConnectorPreview =
+  | { kind: "create"; fromId: string; fromPort: ArrowPort; start: { x: number; y: number }; point: { x: number; y: number }; targetId?: string }
+  | { kind: "endpoint"; arrowId: string; endpoint: "from" | "to"; point: { x: number; y: number }; targetId?: string };
 
 function App({ initial }: { initial: Library }) {
   const [library, setLibrary] = useState<Library>(initial);
@@ -182,6 +211,17 @@ function App({ initial }: { initial: Library }) {
     }));
   }, []);
   const [projectsOpen, setProjectsOpen] = useState(false);
+  const [nameDialog, setNameDialog] = useState<{ kind: "style" | "template"; value: string } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; description: string; confirmLabel?: string; action: () => void } | null>(null);
+  const [versionProjectId, setVersionProjectId] = useState<string | null>(null);
+  const [alignmentGuides, setAlignmentGuides] = useState<Guide[]>([]);
+  const [connectorPreview, setConnectorPreview] = useState<ConnectorPreview | null>(null);
+  const [hoveredConnectorItem, setHoveredConnectorItem] = useState<string | null>(null);
+  const [templateChoice, setTemplateChoice] = useState("");
+  const [pdfPreview, setPdfPreview] = useState<{ assetId: string; name: string } | null>(null);
+  const [linkPreview, setLinkPreview] = useState<{ url: string; title: string } | null>(null);
+  const initialTemplates = useRef(builtInTemplates()).current;
+  const templates = [...initialTemplates, ...(library.templates || [])];
   const [insertTab, setInsertTab] = useState<string | null>(null),
     [mediaBusy, setMediaBusy] = useState(false),
     [interactId, setInteractId] = useState<string | null>(null),
@@ -237,6 +277,11 @@ function App({ initial }: { initial: Library }) {
     gesture = useRef<any>(null),
     spaceRef = useRef(false),
     [, tick] = useState(0);
+  const automaticVersionState = useRef({
+    projectId: activeProject.id,
+    lastFingerprint: JSON.stringify(activeProject),
+    lastCreatedAt: Date.now(),
+  });
   boardRef.current = board;
   const [, fontsLoaded] = useState(false);
   useEffect(() => {
@@ -271,7 +316,7 @@ function App({ initial }: { initial: Library }) {
     sel = scene.items.find((i) => selected.includes(i.id)),
     sceneSubtitle =
       scene.subtitle ?? (index === 0 ? defaultSectionSubtitle : ""),
-    maxStep = Math.max(0, ...scene.items.map((i) => i.step));
+    maxStep = Math.max(0, ...scene.items.filter((i) => !i.hidden).map((i) => i.step));
   sceneRef.current = scene;
   useEffect(() => {
     const presentIds = new Set(scene.items.map((i) => i.id));
@@ -320,6 +365,66 @@ function App({ initial }: { initial: Library }) {
       throw error;
     }
   }, []);
+  const createProjectVersion = async (
+    projectId: string,
+    name: string,
+    source: ProjectVersion["source"] = "manual",
+  ) => {
+    if (mediaPending.current) await mediaPending.current;
+    const currentLibrary = libraryRef.current;
+    const project = currentLibrary.projects.find((entry) => entry.id === projectId);
+    if (!project) throw new Error("O projeto desta versão não está mais na biblioteca.");
+    await writeLibrary(currentLibrary);
+    const version = makeProjectVersion(project, source, name);
+    await persistProjectVersion(version);
+    if (projectId === currentLibrary.activeId) {
+      automaticVersionState.current = {
+        projectId,
+        lastFingerprint: JSON.stringify(project),
+        lastCreatedAt: Date.now(),
+      };
+    }
+    return version;
+  };
+  const restoreProjectVersion = async (version: ProjectVersion) => {
+    if (!validProjectVersion(version)) throw new Error("O snapshot não passou na validação.");
+    const currentLibrary = libraryRef.current;
+    const currentProject = currentLibrary.projects.find((entry) => entry.id === version.projectId);
+    if (!currentProject) throw new Error("O projeto desta versão foi removido.");
+    const assetIds = [...new Set(version.project.board.scenes.flatMap((section) => section.items.map((item) => item.assetId).filter((id): id is string => !!id)))];
+    try {
+      for (const id of assetIds) await getAsset(id);
+    } catch (error) {
+      throw new Error("A versão depende de mídia que não está neste dispositivo. O projeto atual foi mantido. " + (error as Error).message);
+    }
+    await createProjectVersion(version.projectId, `Antes de restaurar · ${new Date().toLocaleString("pt-BR")}`, "restore-safety");
+    const latestLibrary = libraryRef.current;
+    const restoredProject: Project = {
+      ...version.project,
+      id: currentProject.id,
+      createdAt: currentProject.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+    const restoredLibrary: Library = {
+      ...latestLibrary,
+      projects: latestLibrary.projects.map((project) => project.id === version.projectId ? restoredProject : project),
+    };
+    await writeLibrary(restoredLibrary);
+    setLibrary(restoredLibrary);
+    if (restoredLibrary.activeId === version.projectId) {
+      history.current = [];
+      future.current = [];
+      setSelected([]);
+      setEditing(null);
+      tick((n) => n + 1);
+      automaticVersionState.current = {
+        projectId: version.projectId,
+        lastFingerprint: JSON.stringify(restoredProject),
+        lastCreatedAt: Date.now(),
+      };
+    }
+    notify(`Versão “${version.name}” restaurada. A cópia de segurança anterior também foi salva.`);
+  };
   useEffect(() => {
     setSaved(false);
     const timer = setTimeout(() => {
@@ -327,6 +432,38 @@ function App({ initial }: { initial: Library }) {
     }, 450);
     return () => clearTimeout(timer);
   }, [library, saveNow]);
+  useEffect(() => {
+    let cancelled = false;
+    const projectId = activeProject.id;
+    const initialFingerprint = JSON.stringify(activeProject);
+    automaticVersionState.current = {
+      projectId,
+      lastFingerprint: initialFingerprint,
+      lastCreatedAt: Date.now(),
+    };
+    void listProjectVersions(projectId).then((versions) => {
+      if (cancelled || automaticVersionState.current.projectId !== projectId) return;
+      const latest = versions[0];
+      if (latest) automaticVersionState.current.lastCreatedAt = Date.parse(latest.createdAt);
+    }).catch(() => {});
+    const timer = window.setInterval(async () => {
+      const project = libraryRef.current.projects.find((entry) => entry.id === projectId);
+      const state = automaticVersionState.current;
+      if (!project || state.projectId !== projectId) return;
+      const fingerprint = JSON.stringify(project);
+      if (fingerprint === state.lastFingerprint || Date.now() - state.lastCreatedAt < 5 * 60 * 1000) return;
+      try {
+        if (mediaPending.current) await mediaPending.current;
+        const version = makeProjectVersion(project, "automatic", "Salvamento automático");
+        await persistProjectVersion(version);
+        state.lastFingerprint = JSON.stringify(project);
+        state.lastCreatedAt = Date.now();
+      } catch (error) {
+        notify("Não foi possível salvar uma versão automática: " + (error as Error).message);
+      }
+    }, 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [library.activeId]);
   useEffect(() => {
     const persist = () => {
       if (!window.orquestraDesktop) {
@@ -384,17 +521,32 @@ function App({ initial }: { initial: Library }) {
     checkpoint();
     updateScene(fn);
   };
-  const patch = (v: Partial<Item>) =>
+  const changeBoardSettings = (settings: Partial<NonNullable<Board["settings"]>>) => {
+    checkpoint();
+    setBoard((current) => ({ ...current, settings: { ...current.settings, ...settings } }));
+  };
+  const patch = (v: Partial<Item>) => {
+    const eligible = new Set(editableSelection(scene.items, selected));
+    if (!eligible.size) return;
     change((s) => ({
       ...s,
-      items: s.items.map((i) => (selected.includes(i.id) ? { ...i, ...v } : i)),
+      items: s.items.map((item) => {
+        if (!eligible.has(item.id)) return item;
+        return withAutoHeight(item, v);
+      }),
     }));
+  };
+  const patchItem = (id: string, values: Partial<Item>) => {
+    if (!editableSelection(scene.items, [id]).includes(id)) return;
+    updateScene((s) => ({ ...s, items: s.items.map((item) => item.id === id ? withAutoHeight(item, values) : item) }));
+  };
   const updateBorderColor = (value: string) => {
     setColor(value);
+    const eligible = new Set(editableSelection(scene.items, selected));
     updateScene((s) => ({
       ...s,
       items: s.items.map((i) =>
-        selected.includes(i.id)
+        eligible.has(i.id)
           ? { ...i, color: value, textColor: itemTextColor(i) }
           : i,
       ),
@@ -423,7 +575,7 @@ function App({ initial }: { initial: Library }) {
     if (!el) return;
     const items = sceneRef.current?.items || [];
     const bounds = items
-      .filter((i) => i.type !== "arrow")
+      .filter((i) => i.type !== "arrow" && !i.hidden)
       .map((i) =>
         i.type === "pen" && i.points?.length
           ? {
@@ -502,27 +654,188 @@ function App({ initial }: { initial: Library }) {
     setEditing(null);
     fit();
   };
-  const deleteSelected = () => {
-    if (!selected.length) return;
+  const deleteItems = (requested: string[]) => {
+    if (!requested.length) return;
+    const eligible = new Set(editableSelection(scene.items, requested));
+    if (!eligible.size) {
+      notify("Desbloqueie os elementos pelo painel Camadas para excluí-los.");
+      return;
+    }
+    const protectedNodes = new Set<string>();
+    for (const item of scene.items) {
+      if (item.type !== "arrow" || !item.locked) continue;
+      if (item.from && eligible.has(item.from)) protectedNodes.add(item.from);
+      if (item.to && eligible.has(item.to)) protectedNodes.add(item.to);
+    }
+    const protectedGroups = new Set(
+      scene.items.filter((item) => protectedNodes.has(item.id) && item.groupId).map((item) => item.groupId!),
+    );
+    for (const item of scene.items) if (item.groupId && protectedGroups.has(item.groupId)) protectedNodes.add(item.id);
+    protectedNodes.forEach((id) => eligible.delete(id));
+    const deleted = new Set(eligible);
+    if (!deleted.size) {
+      notify("Um elemento bloqueado depende desta seleção. Desbloqueie o conector para excluir com segurança.");
+      return;
+    }
     change((s) => ({
       ...s,
-      items: s.items.filter(
-        (i) =>
-          !selected.includes(i.id) &&
-          !selected.includes(i.from || "") &&
-          !selected.includes(i.to || ""),
+      items: s.items.filter((item) =>
+        !deleted.has(item.id) &&
+        !(item.type === "arrow" && !item.locked && (deleted.has(item.from || "") || deleted.has(item.to || ""))),
       ),
     }));
-    setSelected([]);
+    setSelected((ids) => ids.filter((id) => !deleted.has(id)));
+    if (protectedNodes.size) notify("Elementos com conectores bloqueados foram mantidos.");
   };
+  const deleteSelected = () => deleteItems(selected);
   const duplicate = () => {
     if (!selected.length) return;
     const copies = copySelection(scene.items, selected);
+    if (!copies.length) {
+      notify("Desbloqueie os elementos pelo painel Camadas para duplicá-los.");
+      return;
+    }
     change((s) => ({ ...s, items: [...s.items, ...copies] }));
     setSelected(copies.map((i) => i.id));
   };
+  const arrange = (alignment: Alignment | Distribution) => {
+    const transformed = alignment === "horizontal" || alignment === "vertical"
+      ? distributeItems(scene.items, selected, alignment)
+      : alignItems(scene.items, selected, alignment);
+    if (transformed === scene.items || JSON.stringify(transformed) === JSON.stringify(scene.items)) return;
+    checkpoint();
+    updateScene((s) => ({ ...s, items: transformed }));
+    setAlignmentGuides([]);
+  };
+  const toggleGroup = (ungroup = false) => {
+    if (selected.length < 2 && !ungroup) return;
+    const items = ungroup ? ungroupItems(scene.items, selected) : groupItems(scene.items, selected);
+    if (items === scene.items || JSON.stringify(items) === JSON.stringify(scene.items)) return;
+    checkpoint();
+    updateScene((s) => ({ ...s, items }));
+    if (!ungroup) setSelected(expandGroupIds(items, selected));
+  };
+  const toggleLayerHidden = (id: string) => {
+    const item = scene.items.find((entry) => entry.id === id);
+    if (!item) return;
+    change((s) => ({ ...s, items: setItemHidden(s.items, [id], !item.hidden) }));
+    if (!item.hidden) setSelected((ids) => ids.filter((selectedId) => !expandGroupIds(scene.items, [id]).includes(selectedId)));
+  };
+  const toggleLayerLocked = (id: string) => {
+    const item = scene.items.find((entry) => entry.id === id);
+    if (!item) return;
+    change((s) => ({ ...s, items: setItemLocked(s.items, [id], !item.locked) }));
+  };
+  const renameLayer = (id: string, name: string) => {
+    const clean = name.trim().slice(0, 200);
+    const target = scene.items.find((item) => item.id === id);
+    if (!target || (target.name || "") === clean) return;
+    change((s) => ({ ...s, items: s.items.map((item) => item.id === id ? { ...item, name: clean || undefined } : item) }));
+  };
+  const moveLayer = (id: string, direction: -1 | 1) => {
+    const target = scene.items.find((item) => item.id === id);
+    if (!target) return;
+    const movingIds = new Set(target.groupId ? scene.items.filter((item) => item.groupId === target.groupId).map((item) => item.id) : [id]);
+    const current = [...scene.items];
+    const indices = current.map((item, index) => movingIds.has(item.id) ? index : -1).filter((index) => index >= 0);
+    const neighbor = direction > 0 ? Math.max(...indices) + 1 : Math.min(...indices) - 1;
+    if (neighbor < 0 || neighbor >= current.length || movingIds.has(current[neighbor].id)) return;
+    const lifted = current.filter((item) => movingIds.has(item.id));
+    const remaining = current.filter((item) => !movingIds.has(item.id));
+    const neighborId = current[neighbor].id;
+    const neighborIndex = remaining.findIndex((item) => item.id === neighborId);
+    const insertAt = neighborIndex + (direction > 0 ? 1 : 0);
+    remaining.splice(insertAt, 0, ...lifted);
+    if (JSON.stringify(current) === JSON.stringify(remaining)) return;
+    change((s) => ({ ...s, items: remaining }));
+  };
+  const saveSelectedStyle = (requestedName: string) => {
+    const item = scene.items.find((candidate) => selected.includes(candidate.id));
+    if (!item || !editableSelection(scene.items, selected).includes(item.id)) {
+      notify("Selecione um elemento desbloqueado para salvar seu estilo.");
+      return;
+    }
+    if (!requestedName.trim() || requestedName.trim().length > 100) {
+      notify("Use um nome de até 100 caracteres.");
+      return;
+    }
+    const style: SavedStyle = { id: uid(), name: requestedName.trim(), properties: styleProperties(item) };
+    setLibrary((current) => ({
+      ...current,
+      projects: current.projects.map((project) => project.id === current.activeId
+        ? { ...project, styles: [...(project.styles || []), style] }
+        : project),
+    }));
+    notify(`Estilo “${style.name}” salvo neste projeto.`);
+  };
+  const applyStyleToSelection = (style: SavedStyle) => {
+    const editable = new Set(editableSelection(scene.items, selected));
+    if (!editable.size) {
+      notify("Desbloqueie a seleção pelo painel Camadas para aplicar um estilo.");
+      return;
+    }
+    checkpoint();
+    updateScene((current) => ({
+      ...current,
+      items: current.items.map((item) => {
+        if (!editable.has(item.id)) return item;
+        const styled = applySavedStyle(item, style);
+        return styled.autoHeight ? { ...styled, h: autoHeightFor(styled, wrapText(styled).length) } : styled;
+      }),
+    }));
+    notify(`Estilo “${style.name}” aplicado.`);
+  };
+  const deleteSavedStyle = (style: SavedStyle) => {
+    setConfirmDialog({
+      title: "Excluir estilo reutilizável",
+      description: `Excluir “${style.name}” deste projeto?`,
+      confirmLabel: "Excluir",
+      action: () => setLibrary((current) => ({
+        ...current,
+        projects: current.projects.map((project) => project.id === current.activeId
+          ? { ...project, styles: (project.styles || []).filter((saved) => saved.id !== style.id) }
+          : project),
+      })),
+    });
+  };
+  const insertTemplate = (template: BoardTemplate) => {
+    try {
+      const inserted = insertTemplateScene(template, board.title, board.scenes.length);
+      checkpoint();
+      setBoard((current) => ({ ...current, scenes: [...current.scenes, inserted] }));
+      setSceneId(inserted.id);
+      setSelected([]);
+      setTemplateChoice(template.id);
+      notify(`Seção “${template.name}” inserida como uma cópia independente.`);
+    } catch (error) {
+      notify((error as Error).message);
+    }
+  };
+  const saveSceneTemplate = (requestedName: string) => {
+    try {
+      const template = saveSceneAsTemplate(scene, requestedName);
+      setLibrary((current) => ({ ...current, templates: [...(current.templates || []), template] }));
+      setTemplateChoice(template.id);
+      notify(`Modelo “${template.name}” salvo na biblioteca.`);
+    } catch (error) {
+      notify((error as Error).message);
+    }
+  };
+  const deleteSceneTemplate = (template: BoardTemplate) => {
+    if (!library.templates?.some((saved) => saved.id === template.id)) return;
+    setConfirmDialog({
+      title: "Excluir modelo personalizado",
+      description: `Excluir “${template.name}” da biblioteca?`,
+      confirmLabel: "Excluir",
+      action: () => {
+        setLibrary((current) => ({ ...current, templates: (current.templates || []).filter((saved) => saved.id !== template.id) }));
+        if (templateChoice === template.id) setTemplateChoice("");
+      },
+    });
+  };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (document.querySelector('[data-pdf-viewer], .link-preview-dialog')) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         void saveNow().catch(() => {});
@@ -587,8 +900,13 @@ function App({ initial }: { initial: Library }) {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        setSelected(scene.items.map((i) => i.id));
+        setSelected(scene.items.filter((i) => !i.hidden).map((i) => i.id));
         setInteractId(null);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        toggleGroup(e.shiftKey);
         return;
       }
       if (
@@ -711,16 +1029,7 @@ function App({ initial }: { initial: Library }) {
     };
   };
   const hit = (p: { x: number; y: number }) =>
-    [...scene.items]
-      .reverse()
-      .find(
-        (i) =>
-          !["arrow", "pen"].includes(i.type) &&
-          p.x >= i.x &&
-          p.x <= i.x + i.w &&
-          p.y >= i.y &&
-          p.y <= i.y + i.h,
-      );
+    connectionTargetAt(scene.items, p, [], 0);
   const down = (e: React.PointerEvent) => {
     if (
       (e.target as Element).closest("[data-media-control]") &&
@@ -739,6 +1048,31 @@ function App({ initial }: { initial: Library }) {
     if (editing) return;
     (e.currentTarget as SVGSVGElement).focus({ preventScroll: true });
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    const endpointHandle = (e.target as Element).closest("[data-connector-endpoint]");
+    if (endpointHandle) {
+      const arrowId = endpointHandle.closest("[data-item]")?.getAttribute("data-item");
+      const arrow = scene.items.find((item) => item.id === arrowId);
+      const endpoint = endpointHandle.getAttribute("data-connector-endpoint") as "from" | "to";
+      if (arrow?.type === "arrow" && !arrow.locked && !arrow.hidden) {
+        setSelected([arrow.id]);
+        gesture.current = { kind: "connector-endpoint", p, arrowId, endpoint, items: clone(scene.items), dragging: false };
+        setConnectorPreview({ kind: "endpoint", arrowId: arrow.id, endpoint, point: p });
+      }
+      return;
+    }
+    const portHandle = (e.target as Element).closest("[data-connection-port]");
+    if (portHandle) {
+      const sourceId = portHandle.closest("[data-item]")?.getAttribute("data-item");
+      const source = scene.items.find((item) => item.id === sourceId);
+      const port = portHandle.getAttribute("data-connection-port") as ArrowPort;
+      if (source && !source.hidden && !source.locked && ["north", "east", "south", "west"].includes(port)) {
+        const start = portAnchor(source, port);
+        setSelected(itemSelection(scene.items, source.id));
+        gesture.current = { kind: "connector-create", p, start, sourceId: source.id, sourcePort: port, dragging: false };
+        setConnectorPreview({ kind: "create", fromId: source.id, fromPort: port, start, point: p });
+      }
+      return;
+    }
     if (tool === "hand" || e.button === 1 || spaceRef.current) {
       gesture.current = {
         kind: "pan",
@@ -750,41 +1084,33 @@ function App({ initial }: { initial: Library }) {
     }
     if (tool === "eraser") {
       if (target) {
-        checkpoint();
-        updateScene((s) => ({
-          ...s,
-          items: s.items.filter(
-            (i) => i.id !== target && i.from !== target && i.to !== target,
-          ),
-        }));
+        deleteItems(itemSelection(scene.items, target));
       }
       return;
     }
     if (tool === "select") {
       const modified = e.ctrlKey || e.metaKey || e.shiftKey;
       if (target) {
-        const already = selected.includes(target),
-          toggle = e.ctrlKey || e.metaKey,
-          ids = toggle
-            ? already
-              ? selected.filter((id) => id !== target)
-              : [...selected, target]
-            : e.shiftKey
-              ? [...new Set([...selected, target])]
-              : already
-                ? selected
-                : [target];
+        const targetIds = itemSelection(scene.items, target);
+        const targetSet = new Set(targetIds);
+        const already = targetIds.length > 0 && targetIds.every((id) => selected.includes(id));
+        const toggle = e.ctrlKey || e.metaKey;
+        const ids = toggle
+          ? already ? selected.filter((id) => !targetSet.has(id)) : [...new Set([...selected, ...targetIds])]
+          : e.shiftKey ? [...new Set([...selected, ...targetIds])]
+          : already ? selected : targetIds;
         setSelected(ids);
         if (toggle && already) {
           gesture.current = null;
           return;
         }
+        const editable = new Set(editableSelection(scene.items, ids));
+        const resize = (e.target as Element).getAttribute("data-resize") !== null;
+        const targetItem = scene.items.find((item) => item.id === target);
         gesture.current = {
-          kind: (e.target as Element).getAttribute("data-resize")
-            ? "resize"
-            : "move",
+          kind: !editable.has(target) ? "select-only" : resize && !targetItem?.groupId ? "resize" : "move",
           p,
-          ids,
+          ids: expandGroupIds(scene.items, ids),
           items: clone(scene.items),
           dragging: false,
           checkpoint: false,
@@ -820,7 +1146,9 @@ function App({ initial }: { initial: Library }) {
               ? 170
               : 0,
       text:
-        tool === "agent"
+        tool === "frame"
+          ? "Novo frame"
+          : tool === "agent"
           ? "Novo agente\nDuplo clique para editar"
           : tool === "note"
             ? "Uma ideia começa aqui."
@@ -829,9 +1157,11 @@ function App({ initial }: { initial: Library }) {
               : "",
       color,
       fill: tool === "note" ? color : "transparent",
-      size: 26,
+      size: tool === "frame" ? 18 : 26,
+      ...(tool === "frame" ? { fontFamily: "DM Sans" as const } : {}),
       step: 0,
       animation: tool === "pen" ? "draw" : "fade",
+      ...(["text", "note", "agent"].includes(tool) ? { autoHeight: true } : {}),
       ...(tool === "pen" ? { points: [[0, 0]] } : {}),
       ...(tool === "arrow" ? { from: hit(p)?.id } : {}),
     };
@@ -859,6 +1189,20 @@ function App({ initial }: { initial: Library }) {
     const p = point(e),
       dx = p.x - g.p.x,
       dy = p.y - g.p.y;
+    if (g.kind === "connector-create") {
+      g.dragging ||= Math.hypot(dx, dy) * view.z >= 4;
+      const target = connectionTargetAt(scene.items, p, [g.sourceId], 12 / view.z);
+      setConnectorPreview({ kind: "create", fromId: g.sourceId, fromPort: g.sourcePort, start: g.start, point: p, targetId: target?.id });
+      return;
+    }
+    if (g.kind === "connector-endpoint") {
+      g.dragging ||= Math.hypot(dx, dy) * view.z >= 4;
+      const arrow = g.items.find((item: Item) => item.id === g.arrowId);
+      const excluded = [g.arrowId, g.endpoint === "from" ? arrow?.to : arrow?.from].filter(Boolean) as string[];
+      const target = connectionTargetAt(scene.items, p, excluded, 12 / view.z);
+      setConnectorPreview({ kind: "endpoint", arrowId: g.arrowId, endpoint: g.endpoint, point: p, targetId: target?.id });
+      return;
+    }
     if (["move", "resize", "marquee"].includes(g.kind)) {
       if (!g.dragging && Math.hypot(dx, dy) * view.z < 4) return;
       g.dragging = true;
@@ -867,9 +1211,13 @@ function App({ initial }: { initial: Library }) {
           mode: SelectionMode =
             e.ctrlKey || e.metaKey ? "toggle" : e.shiftKey ? "add" : "replace";
         setMarquee(area);
+        const hits = expandGroupIds(
+          scene.items,
+          itemsInArea(scene.items, area),
+        );
         const ids = combineSelection(
           g.base,
-          itemsInArea(scene.items, area),
+          hits,
           mode,
         );
         setSelected((previous) =>
@@ -886,12 +1234,27 @@ function App({ initial }: { initial: Library }) {
         checkpoint();
         g.checkpoint = true;
       }
-      if (g.kind === "move")
+      if (g.kind === "move") {
+        const settings = board.settings;
+        const snapped = e.altKey
+          ? { dx, dy, guides: [] as Guide[] }
+          : snapPoint(
+              g.items,
+              g.ids,
+              dx,
+              dy,
+              view.z,
+              !!settings?.snapToGrid,
+              settings?.alignmentGuides !== false,
+              settings?.gridSize || 20,
+              6,
+            );
+        setAlignmentGuides(snapped.guides);
         updateScene((s) => ({
           ...s,
-          items: translateSelection(g.items, g.ids, dx, dy),
+          items: translateSelection(g.items, g.ids, snapped.dx, snapped.dy),
         }));
-      else
+      } else
         updateScene((s) => ({
           ...s,
           items: s.items.map((i) => {
@@ -903,7 +1266,7 @@ function App({ initial }: { initial: Library }) {
             const side = lockShape
               ? Math.max(40, original.w + dx, original.h + dy)
               : undefined;
-            return g.ids.includes(i.id)
+              return g.ids.includes(i.id) && !i.locked && !i.hidden
               ? {
                   ...i,
                   w: side ?? Math.max(40, original.w + dx),
@@ -922,7 +1285,20 @@ function App({ initial }: { initial: Library }) {
             : i.type === "pen"
               ? { ...i, points: [...i.points!, [dx, dy]] }
               : i.type === "arrow"
-                ? { ...i, w: dx, h: dy, to: hit(p)?.id }
+                ? (() => {
+                    const target = hit(p);
+                    const endTarget = target?.id !== i.from ? target : undefined;
+                    const source = i.from ? s.items.find((candidate) => candidate.id === i.from) : undefined;
+                    const targetCenter = endTarget ? { x: endTarget.x + endTarget.w / 2, y: endTarget.y + endTarget.h / 2 } : { x: i.x + dx, y: i.y + dy };
+                    return {
+                      ...i,
+                      w: dx,
+                      h: dy,
+                      to: endTarget?.id,
+                      fromPort: source ? portForDirection(source, targetCenter) : undefined,
+                      toPort: endTarget ? portForDirection(endTarget, source ? { x: source.x + source.w / 2, y: source.y + source.h / 2 } : { x: i.x, y: i.y }) : undefined,
+                    };
+                  })()
               : (() => {
                   const lockShape =
                     e.shiftKey && ["rect", "ellipse"].includes(i.type);
@@ -953,7 +1329,9 @@ function App({ initial }: { initial: Library }) {
       tick((n) => n + 1);
     }
     gesture.current = null;
+    setConnectorPreview(null);
     setMarquee(null);
+    setAlignmentGuides([]);
   };
   const up = (e: React.PointerEvent<SVGSVGElement>) => {
     if (
@@ -961,10 +1339,49 @@ function App({ initial }: { initial: Library }) {
       ["move", "resize", "marquee"].includes(gesture.current.kind)
     )
       move(e);
+    if (gesture.current && ["connector-create", "connector-endpoint"].includes(gesture.current.kind)) move(e);
     const g = gesture.current;
+    if (g?.kind === "connector-create") {
+      const source = scene.items.find((item) => item.id === g.sourceId);
+      const target = connectionTargetAt(scene.items, point(e), [g.sourceId], 12 / view.z);
+      if (g.dragging && source && !source.locked && !source.hidden) {
+        const start = portAnchor(source, g.sourcePort);
+        const toPort = target ? portForDirection(target, start) : undefined;
+        const end = target && toPort ? portAnchor(target, toPort) : point(e);
+        const arrow: Item = {
+          id: uid(), type: "arrow", x: start.x, y: start.y, w: end.x - start.x, h: end.y - start.y,
+          text: "", color, fill: "transparent", size: 26, step: 0, animation: "fade",
+          from: source.id, fromPort: g.sourcePort, to: target?.id, toPort,
+        };
+        checkpoint();
+        updateScene((s) => ({ ...s, items: [...s.items, arrow] }));
+        setSelected([arrow.id]);
+        setTool("select");
+      }
+      setConnectorPreview(null);
+      gesture.current = null;
+      return;
+    }
+    if (g?.kind === "connector-endpoint") {
+      const arrow = scene.items.find((item) => item.id === g.arrowId);
+      const pointer = point(e);
+      const excluded = [g.arrowId, g.endpoint === "from" ? arrow?.to : arrow?.from].filter(Boolean) as string[];
+      const target = connectionTargetAt(scene.items, pointer, excluded, 12 / view.z);
+      if (g.dragging && arrow && !arrow.locked && !arrow.hidden) {
+        const updated = reconnectArrowEndpoint(arrow, scene.items, g.endpoint, pointer, target);
+        if (updated !== arrow) {
+          checkpoint();
+          updateScene((s) => ({ ...s, items: s.items.map((item) => item.id === arrow.id ? updated : item) }));
+        }
+      }
+      setConnectorPreview(null);
+      gesture.current = null;
+      return;
+    }
     if (g?.kind === "move" && !g.dragging && g.collapse)
-      setSelected([g.collapse]);
+      setSelected(itemSelection(scene.items, g.collapse));
     setMarquee(null);
+    setAlignmentGuides([]);
     if (g?.kind === "create") {
       updateScene((s) => ({
         ...s,
@@ -981,6 +1398,7 @@ function App({ initial }: { initial: Library }) {
       setTool("select");
     }
     gesture.current = null;
+    setConnectorPreview(null);
   };
   const createTextAt = (p: { x: number; y: number }) => {
     const i: Item = {
@@ -997,6 +1415,7 @@ function App({ initial }: { initial: Library }) {
       fontFamily: "Caveat",
       step: 0,
       animation: "fade",
+      autoHeight: true,
     };
     checkpoint();
     updateScene((s) => ({ ...s, items: [...s.items, i] }));
@@ -1006,9 +1425,38 @@ function App({ initial }: { initial: Library }) {
     setSidebar(true);
     setEditing(i.id);
   };
+  const editFrameTitle = (i: Item) => {
+    if (i.locked || i.hidden || present) return;
+    setSelected(itemSelection(scene.items, i.id));
+    setTab("style");
+    setSidebar(true);
+    setTimeout(() => {
+      const input = document.querySelector<HTMLTextAreaElement>('[aria-label="Título do frame"]');
+      input?.focus();
+      input?.scrollIntoView({ block: "nearest" });
+    }, 0);
+  };
   const editItem = (i: Item) => {
+    if (i.locked || i.hidden) {
+      notify("Desbloqueie esta camada pelo painel Camadas para editá-la.");
+      return;
+    }
     if (present) return;
-    setSelected([i.id]);
+    if (i.type === "frame") {
+      editFrameTitle(i);
+      return;
+    }
+    if (i.type === "link" && i.url) {
+      setInteractId(null);
+      setLinkPreview({ url: i.url, title: i.text });
+      return;
+    }
+    if (i.type === "file" && ((i.assetMime || "").toLowerCase().includes("pdf") || i.assetName?.toLowerCase().endsWith(".pdf"))) {
+      setInteractId(null);
+      setPdfPreview({ assetId: i.assetId || "", name: i.assetName || "Documento PDF" });
+      return;
+    }
+    setSelected(itemSelection(scene.items, i.id));
     setTab("style");
     setSidebar(true);
     if (["image", "video", "audio", "file", "link", "icon"].includes(i.type)) {
@@ -1145,10 +1593,40 @@ function App({ initial }: { initial: Library }) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
+  const exportBoardPdf = async () => {
+    setExports(false);
+    const printWindow = window.orquestraDesktop ? null : window.open("", "_blank");
+    if (!window.orquestraDesktop && !printWindow) {
+      notify("O navegador bloqueou a janela de impressão. Permita pop-ups e tente novamente.");
+      return;
+    }
+    try {
+      const pages = await renderBoardPages(board, light);
+      if (window.orquestraDesktop) {
+        const saved = await window.orquestraDesktop.exportBoardPdf(board.title, pages);
+        if (saved) notify("PDF do board salvo.");
+        return;
+      }
+      const document = printWindow!.document;
+      const safeTitle = board.title.replace(/[&<>"']/g, "");
+      document.open();
+      document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${safeTitle}</title><style>@page{size:A4 landscape;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff}.page{width:297mm;height:210mm;display:flex;align-items:center;justify-content:center;page-break-after:always;overflow:hidden}.page:last-child{page-break-after:auto}.page svg{max-width:100%;max-height:100%;width:auto;height:auto}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}</style></head><body>${pages.map((svg) => `<section class="page">${svg}</section>`).join("")}<script>window.addEventListener('load',async()=>{try{await document.fonts.ready;await Promise.all([...document.images].map(image=>image.decode().catch(()=>{})))}finally{window.print()}},{once:true})<\/script></body></html>`);
+      document.close();
+      printWindow!.focus();
+      notify("Na janela de impressão, escolha “Salvar como PDF” como destino.");
+    } catch (error) {
+      printWindow?.close();
+      notify("Falha ao preparar o PDF do board: " + (error as Error).message);
+    }
+  };
   const exportFile = async (type: string) => {
     setExports(false);
     if (type === "json") {
       await backup(false);
+      return;
+    }
+    if (type === "board-pdf") {
+      await exportBoardPdf();
       return;
     }
     const original = svgRef.current!,
@@ -1160,7 +1638,7 @@ function App({ initial }: { initial: Library }) {
     const group = copy.querySelector("[data-world]");
     group?.removeAttribute("transform");
     group?.removeAttribute("style");
-    copy.querySelectorAll("[data-selection]").forEach((e) => e.remove());
+    copy.querySelectorAll("[data-selection], [data-alignment-guide]").forEach((e) => e.remove());
     copy
       .querySelectorAll("[data-item]")
       .forEach((e) => e.removeAttribute("style"));
@@ -1187,7 +1665,7 @@ function App({ initial }: { initial: Library }) {
     fontStyle.textContent = `@font-face{font-family:Caveat;font-weight:400 700;src:url(data:font/woff2;base64,${encoded[0]})} @font-face{font-family:'DM Sans';font-weight:400 700;src:url(data:font/woff2;base64,${encoded[1]})}`;
     copy.insertBefore(fontStyle, copy.firstChild);
     const bounds = scene.items.filter(
-      (i) => !["arrow", "pen"].includes(i.type),
+      (i) => !i.hidden && !["arrow", "pen"].includes(i.type),
     );
     const bx = Math.min(-60, ...bounds.map((i) => i.x - 40)),
       by = Math.min(-50, ...bounds.map((i) => i.y - 40)),
@@ -1548,6 +2026,7 @@ function App({ initial }: { initial: Library }) {
         }[c] || c
       : c;
   const renderItem = (i: Item) => {
+    if (i.hidden || (i.type === "arrow" && scene.items.some((target) => target.hidden && (target.id === i.from || target.id === i.to)))) return null;
     const path = i.type === "arrow" ? arrowGeometry(i, scene.items).path : "";
     const bounds = itemBounds(i, scene.items);
     const c = mappedColor(i.color),
@@ -1556,12 +2035,17 @@ function App({ initial }: { initial: Library }) {
     const visible =
       (present || previewMotion) && !hidden && i.animation !== "none";
     const Icon = iconByName(i.icon);
+    const alignment = i.textAlign || (["agent", "text", "note"].includes(i.type) ? "left" : "center");
+    const textAnchor = alignment === "center" ? "middle" : alignment === "right" ? "end" : "start";
+    const textLeft = i.type === "agent" ? i.x + 72 : i.x + 16;
+    const textX = alignment === "center" ? (i.type === "agent" ? i.x + 72 + (i.w - 94) / 2 : i.x + i.w / 2) : alignment === "right" ? i.x + i.w - 16 : textLeft;
+    const rowSpacing = i.size * (i.lineHeight ?? 1.1);
     return (
       <g
         key={i.id}
         data-item={i.id}
         data-selected={selected.includes(i.id) ? "true" : undefined}
-        className={`${visible ? "reveal " + i.animation : ""} ${!present ? "editable" : ""}`}
+        className={`${visible ? "reveal " + i.animation : ""} ${!present ? "editable" : ""} ${i.locked ? "locked" : ""}`}
         style={{
           opacity: hidden ? 0 : 1,
           pointerEvents: hidden ? "none" : undefined,
@@ -1569,8 +2053,14 @@ function App({ initial }: { initial: Library }) {
         }}
         onDoubleClick={(e) => {
           e.stopPropagation();
+          if (i.type === "frame") {
+            editFrameTitle(i);
+            return;
+          }
           editItem(i);
         }}
+        onPointerEnter={() => { if (!present) setHoveredConnectorItem(i.id); }}
+        onPointerLeave={() => setHoveredConnectorItem((current) => current === i.id ? null : current)}
       >
         {i.type === "icon" ? (
           <>
@@ -1597,6 +2087,8 @@ function App({ initial }: { initial: Library }) {
             interactive={(present && !hidden) || interactId === i.id}
             active={(present && !hidden) || interactId === i.id}
             color={c}
+            onOpenPdf={(assetId) => setPdfPreview({ assetId, name: i.assetName || "Documento PDF" })}
+            onOpenLink={() => setLinkPreview({ url: i.url || "", title: i.text })}
           />
         ) : i.type === "arrow" ? (
           <ArrowVisual
@@ -1709,16 +2201,43 @@ function App({ initial }: { initial: Library }) {
                 <path d="M0 32V0c13-7 18 8 31 0v21c-13 8-18-7-31 0" />
               </g>
             )}
-            <text
-              x={
-                i.type === "agent"
-                  ? i.x + 72
-                  : i.type === "text" || i.type === "note"
-                    ? i.x + 16
-                    : i.x +
-                      i.w / 2 +
-                      (i.type === "rect" && i.color === colors[1] ? 14 : 0)
-              }
+            {i.type === "frame" && i.text && (
+              <g
+                data-frame-title="true"
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  editFrameTitle(i);
+                }}
+              >
+                <rect
+                  x={i.x + 8}
+                  y={i.y - frameTitleHeight(i)}
+                  width={Math.max(0, i.w - 16)}
+                  height={frameTitleHeight(i)}
+                  fill="var(--bg)"
+                  pointerEvents="all"
+                />
+                <text
+                  x={i.x + 14}
+                  y={i.y - frameTitleHeight(i) + i.size + 3}
+                  fill={mappedColor(itemTextColor(i))}
+                  fontFamily={fontStacks[i.fontFamily || "DM Sans"]}
+                  fontSize={i.size}
+                  fontWeight={i.bold ? 700 : 500}
+                  fontStyle={i.italic ? "italic" : "normal"}
+                  style={{ userSelect: "none", pointerEvents: "none" }}
+                >
+                  {lines.map((line, n) => (
+                    <tspan key={n} x={i.x + 14} dy={n ? i.size * (i.lineHeight || 1.1) : 0}>
+                      {line}
+                    </tspan>
+                  ))}
+                </text>
+              </g>
+            )}
+            {i.type !== "frame" && <text
+              x={textX}
               y={
                 i.type === "agent"
                   ? i.y + 42
@@ -1726,41 +2245,29 @@ function App({ initial }: { initial: Library }) {
                     ? i.y + 30
                     : i.type === "note"
                       ? i.y + 38
-                      : i.y + i.h / 2 - (lines.length - 1) * i.size * 0.56 + 8
+                    : i.y + i.h / 2 - (lines.length - 1) * rowSpacing * 0.5 + 8
               }
-              textAnchor={
-                ["agent", "text", "note"].includes(i.type) ? "start" : "middle"
-              }
+              textAnchor={textAnchor}
               fill={mappedColor(itemTextColor(i))}
               fontFamily={fontStacks[i.fontFamily || "Caveat"]}
               fontSize={i.size}
+              fontWeight={i.bold ? 700 : 500}
+              fontStyle={i.italic ? "italic" : "normal"}
               style={{ userSelect: "none", pointerEvents: "none" }}
             >
               {lines.map((l, n) => (
                 <tspan
                   key={n}
-                  x={
-                    i.type === "agent"
-                      ? i.x + 72
-                      : i.type === "text" || i.type === "note"
-                        ? i.x + 16
-                        : i.x +
-                          i.w / 2 +
-                          (i.type === "rect" && i.color === colors[1] ? 14 : 0)
-                  }
-                  dy={
-                    n
-                      ? i.type === "agent" && n > 1
-                        ? i.size * 0.85
-                        : i.size * 1.1
-                      : 0
-                  }
+                  x={textX}
+                  dy={n ? i.size * (i.type === "agent" ? 0.72 : 1) * (i.lineHeight ?? 1.1) : 0}
                   fontSize={i.type === "agent" && n ? i.size * 0.72 : undefined}
+                  fontWeight={i.bold ? 700 : 500}
+                  fontStyle={i.italic ? "italic" : "normal"}
                 >
                   {l}
                 </tspan>
               ))}
-            </text>
+            </text>}
           </>
         )}
         {!present && selected.includes(i.id) && (
@@ -1776,7 +2283,7 @@ function App({ initial }: { initial: Library }) {
               strokeDasharray="4 3"
               pointerEvents="none"
             />
-            {selected.length === 1 && !["arrow", "pen"].includes(i.type) && (
+            {selected.length === 1 && !i.groupId && !i.locked && !["arrow", "pen"].includes(i.type) && (
               <rect
                 data-resize="true"
                 data-item={i.id}
@@ -1788,11 +2295,68 @@ function App({ initial }: { initial: Library }) {
                 style={{ cursor: "nwse-resize" }}
               />
             )}
+            {!i.locked && !i.hidden && !["arrow", "pen"].includes(i.type) &&
+              (selected.includes(i.id) || hoveredConnectorItem === i.id) && (
+                <g data-connection-ports="true">
+                  {(["north", "east", "south", "west"] as const).map((port) => {
+                    const anchor = portAnchor(i, port);
+                    return <circle
+                      key={port}
+                      data-connection-port={port}
+                      cx={anchor.x}
+                      cy={anchor.y}
+                      r={7 / view.z}
+                      fill={light ? "#1672ce" : "#79baff"}
+                      stroke="var(--bg)"
+                      strokeWidth={2 / view.z}
+                      style={{ cursor: "crosshair" }}
+                    />;
+                  })}
+                </g>
+              )}
+            {selected.includes(i.id) && i.type === "arrow" && !i.locked && (
+              <g data-connector-handles="true">
+                {(["from", "to"] as const).map((endpoint) => {
+                  const point = endpoint === "from" ? arrowGeometry(i, scene.items).start : arrowGeometry(i, scene.items).end;
+                  return <circle
+                    key={endpoint}
+                    data-connector-endpoint={endpoint}
+                    cx={point.x}
+                    cy={point.y}
+                    r={7 / view.z}
+                    fill={light ? "#1672ce" : "#79baff"}
+                    stroke="var(--bg)"
+                    strokeWidth={2 / view.z}
+                    style={{ cursor: "crosshair" }}
+                  />;
+                })}
+              </g>
+            )}
           </g>
         )}
       </g>
     );
   };
+  const editableSelected = editableSelection(scene.items, selected);
+  const connectorPreviewModel = (() => {
+    if (!connectorPreview) return null;
+    if (connectorPreview.kind === "create") {
+      const source = scene.items.find((item) => item.id === connectorPreview.fromId);
+      if (!source) return null;
+      const target = connectorPreview.targetId ? scene.items.find((item) => item.id === connectorPreview.targetId) : undefined;
+      const start = portAnchor(source, connectorPreview.fromPort);
+      const toPort = target ? portForDirection(target, start) : undefined;
+      const end = target && toPort ? portAnchor(target, toPort) : connectorPreview.point;
+      const item: Item = { id: "connector-preview", type: "arrow", x: start.x, y: start.y, w: end.x - start.x, h: end.y - start.y, text: "", color, fill: "transparent", size: 26, step: 0, animation: "fade", from: source.id, fromPort: connectorPreview.fromPort, to: target?.id, toPort };
+      return { item, path: arrowGeometry(item, [...scene.items, item]).path, target };
+    }
+    const original = scene.items.find((item) => item.id === connectorPreview.arrowId);
+    if (!original) return null;
+    const target = connectorPreview.targetId ? scene.items.find((item) => item.id === connectorPreview.targetId) : undefined;
+    const item = reconnectArrowEndpoint(original, scene.items, connectorPreview.endpoint, connectorPreview.point, target);
+    const items = scene.items.map((entry) => entry.id === item.id ? item : entry);
+    return { item, path: arrowGeometry(item, items).path, target };
+  })();
   return (
     <div
       className={`app ${light ? "light" : ""} accent-${accent} ${present ? "presenting" : ""}`}
@@ -1820,6 +2384,43 @@ function App({ initial }: { initial: Library }) {
           }}
           onOpen={(id) => setLibrary((l) => ({ ...l, activeId: id }))}
           notify={notify}
+          onVersions={(id) => setVersionProjectId(id)}
+        />
+      )}
+      {versionProjectId && library.projects.find((project) => project.id === versionProjectId) && (
+        <VersionManager
+          project={library.projects.find((project) => project.id === versionProjectId)!}
+          onClose={() => setVersionProjectId(null)}
+          onCreate={(name) => createProjectVersion(versionProjectId, name)}
+          onRestore={restoreProjectVersion}
+        />
+      )}
+      {nameDialog && (
+        <NameDialog
+          title={nameDialog.kind === "style" ? "Salvar estilo reutilizável" : "Salvar modelo de seção"}
+          label={nameDialog.kind === "style" ? "Nome do estilo" : "Nome do modelo"}
+          value={nameDialog.value}
+          onChange={(value) => setNameDialog((current) => current ? { ...current, value } : current)}
+          onClose={() => setNameDialog(null)}
+          onSubmit={() => {
+            const request = nameDialog;
+            if (request.kind === "style") saveSelectedStyle(request.value);
+            else saveSceneTemplate(request.value);
+            setNameDialog(null);
+          }}
+        />
+      )}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          description={confirmDialog.description}
+          confirmLabel={confirmDialog.confirmLabel}
+          onClose={() => setConfirmDialog(null)}
+          onConfirm={() => {
+            const request = confirmDialog;
+            setConfirmDialog(null);
+            request.action();
+          }}
         />
       )}
       <header>
@@ -1920,6 +2521,14 @@ function App({ initial }: { initial: Library }) {
                 >
                   <Download />
                   Exportar seção (.png)
+                </button>
+                <button
+                  onClick={() => {
+                    void exportFile("board-pdf");
+                  }}
+                >
+                  <Download />
+                  Exportar board inteiro (.pdf)
                 </button>
                 <button
                   onClick={() => {
@@ -2119,6 +2728,38 @@ function App({ initial }: { initial: Library }) {
                   </>
                 )}
                 {scene.items.map(renderItem)}
+                {connectorPreviewModel && (
+                  <g data-connector-preview="true" pointerEvents="none">
+                    <ArrowVisual item={connectorPreviewModel.item} path={connectorPreviewModel.path} color={mappedColor(connectorPreviewModel.item.color)} animated={false} />
+                  </g>
+                )}
+                {connectorPreviewModel?.target && (() => {
+                  const b = itemBounds(connectorPreviewModel.target, scene.items);
+                  const port = connectorPreview?.kind === "create"
+                    ? connectorPreviewModel.item.toPort
+                    : connectorPreview?.kind === "endpoint"
+                      ? connectorPreview.endpoint === "from" ? connectorPreviewModel.item.fromPort : connectorPreviewModel.item.toPort
+                      : undefined;
+                  const anchor = port ? portAnchor(connectorPreviewModel.target, port) : null;
+                  return <g data-connection-target="true" pointerEvents="none">
+                    <rect x={b.x - 4 / view.z} y={b.y - 4 / view.z} width={b.w + 8 / view.z} height={b.h + 8 / view.z} rx={4 / view.z} fill="none" stroke={light ? "#1672ce" : "#79baff"} strokeWidth={2 / view.z} strokeDasharray={`${5 / view.z} ${3 / view.z}`} />
+                    {anchor && <circle data-connection-target-port="true" cx={anchor.x} cy={anchor.y} r={8 / view.z} fill={light ? "#1672ce" : "#79baff"} stroke="var(--bg)" strokeWidth={2 / view.z} />}
+                  </g>;
+                })()}
+                {alignmentGuides.map((guide, guideIndex) => (
+                  <line
+                    key={`${guide.axis}-${guide.position}-${guideIndex}`}
+                    data-alignment-guide="true"
+                    x1={guide.axis === "x" ? guide.position : guide.from}
+                    x2={guide.axis === "x" ? guide.position : guide.to}
+                    y1={guide.axis === "y" ? guide.position : guide.from}
+                    y2={guide.axis === "y" ? guide.position : guide.to}
+                    stroke={light ? "#1672ce" : "#79baff"}
+                    strokeWidth={1 / view.z}
+                    strokeDasharray={`${5 / view.z} ${3 / view.z}`}
+                    pointerEvents="none"
+                  />
+                ))}
               </g>
               {!present &&
                 selected.length > 1 &&
@@ -2226,17 +2867,14 @@ function App({ initial }: { initial: Library }) {
                     fontSize: i.size * view.z,
                     color: mappedColor(itemTextColor(i)),
                     fontFamily: fontStacks[i.fontFamily || "Caveat"],
+                    fontWeight: i.bold ? 700 : 500,
+                    fontStyle: i.italic ? "italic" : "normal",
+                    lineHeight: i.lineHeight || 1.1,
+                    textAlign: i.textAlign || "left",
                   }}
                   placeholder="Digite seu texto"
                   value={i.text}
-                  onChange={(e) =>
-                    updateScene((s) => ({
-                      ...s,
-                      items: s.items.map((n) =>
-                        n.id === editing ? { ...n, text: e.target.value } : n,
-                      ),
-                    }))
-                  }
+                  onChange={(e) => patchItem(editing!, { text: e.target.value })}
                   onBlur={() => setEditing(null)}
                   onKeyDown={(e) => {
                     e.stopPropagation();
@@ -2416,6 +3054,28 @@ function App({ initial }: { initial: Library }) {
               </div>
             </>
           )}
+          {selected.length > 0 && !present && (
+            <div className="selection-bar">
+              <span>
+                {selected.length} selecionado{selected.length > 1 ? "s" : ""}
+              </span>
+              <button
+                title="Editar estilo"
+                onClick={() => {
+                  setTab("style");
+                  setSidebar(true);
+                }}
+              >
+                <Settings2 size={15} />
+              </button>
+              <button title="Duplicar" onClick={duplicate}>
+                <Copy size={15} />
+              </button>
+              <button title="Excluir" onClick={deleteSelected}>
+                <Trash2 size={15} />
+              </button>
+            </div>
+          )}
         </div>
         {!present && sidebar && (
           <aside>
@@ -2432,6 +3092,14 @@ function App({ initial }: { initial: Library }) {
                 onClick={() => setTab("style")}
               >
                 Estilo
+              </button>
+              <button
+                className={tab === "layers" ? "active" : ""}
+                aria-label="Camadas"
+                title="Camadas"
+                onClick={() => setTab("layers")}
+              >
+                <Layers size={15} />
               </button>
               <button
                 className={`board-settings-tab ${tab === "settings" ? "active" : ""}`}
@@ -2478,6 +3146,31 @@ function App({ initial }: { initial: Library }) {
                   <Plus size={17} />
                   Nova seção
                 </button>
+                <div className="section-templates">
+                  <div className="panel-subheading">Modelos de seção</div>
+                  <select
+                    aria-label="Modelo de seção"
+                    value={templateChoice}
+                    onChange={(event) => setTemplateChoice(event.target.value)}
+                  >
+                    <option value="">Escolha um modelo</option>
+                    {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                  </select>
+                  <div className="template-actions">
+                    <button disabled={!templateChoice} onClick={() => {
+                      const template = templates.find((entry) => entry.id === templateChoice);
+                      if (template) insertTemplate(template);
+                    }}>Inserir cópia</button>
+                    <button onClick={() => setNameDialog({ kind: "template", value: scene.name || "Minha seção" })}>Salvar seção atual</button>
+                  </div>
+                  {templates.some((template) => template.id === templateChoice && library.templates?.some((saved) => saved.id === template.id)) && (
+                    <button className="template-delete" onClick={() => {
+                      const template = library.templates?.find((entry) => entry.id === templateChoice);
+                      if (template) deleteSceneTemplate(template);
+                    }}>Excluir modelo personalizado</button>
+                  )}
+                  <p className="field-help">Inserir cria uma nova seção. Modelos personalizados e suas referências de mídia acompanham o backup da biblioteca.</p>
+                </div>
                 <div className="section-settings">
                   <label>
                     Nome da seção
@@ -2550,6 +3243,16 @@ function App({ initial }: { initial: Library }) {
                   </button>
                 </div>
               </>
+            ) : tab === "layers" ? (
+              <LayerPanel
+                scene={scene}
+                selected={selected}
+                onSelect={setSelected}
+                onRename={renameLayer}
+                onToggleHidden={toggleLayerHidden}
+                onToggleLocked={toggleLayerLocked}
+                onMove={moveLayer}
+              />
             ) : tab === "settings" ? (
               <div className="style-panel board-settings-panel">
                 <div className="panel-heading">
@@ -2603,6 +3306,41 @@ function App({ initial }: { initial: Library }) {
                     <option value="plain">Liso</option>
                   </select>
                 </section>
+                <section className="appearance-options" aria-label="Alinhamento e encaixe">
+                  <div className="panel-subheading">Alinhamento e encaixe</div>
+                  <label className="check-setting">
+                    <input
+                      type="checkbox"
+                      aria-label="Encaixar na grade"
+                      checked={!!board.settings?.snapToGrid}
+                      onChange={(event) => changeBoardSettings({ snapToGrid: event.target.checked })}
+                    />
+                    Encaixar na grade
+                  </label>
+                  <label>
+                    Espaçamento da grade <span>{board.settings?.gridSize || 20}px</span>
+                    <input
+                      aria-label="Tamanho da grade"
+                      type="range"
+                      min="8"
+                      max="80"
+                      step="4"
+                      value={board.settings?.gridSize || 20}
+                      onPointerDown={checkpoint}
+                      onChange={(event) => setBoard((current) => ({ ...current, settings: { ...current.settings, gridSize: +event.target.value } }))}
+                    />
+                  </label>
+                  <label className="check-setting">
+                    <input
+                      type="checkbox"
+                      aria-label="Mostrar guias de alinhamento"
+                      checked={board.settings?.alignmentGuides !== false}
+                      onChange={(event) => changeBoardSettings({ alignmentGuides: event.target.checked })}
+                    />
+                    Mostrar guias de alinhamento
+                  </label>
+                  <p className="field-help">Use Alt durante o arraste para suspender o encaixe. A tolerância das guias é de 6 px de tela, ajustada ao zoom.</p>
+                </section>
               </div>
             ) : (
               <div className="style-panel">
@@ -2610,6 +3348,25 @@ function App({ initial }: { initial: Library }) {
                   <Settings2 size={15} />
                   {sel ? "Elemento selecionado" : "Ferramenta de desenho"}
                 </div>
+                <section className="arrange-tools" aria-label="Alinhar, distribuir e agrupar">
+                  <div className="panel-subheading">Organizar seleção</div>
+                  <div className="arrange-grid">
+                    {([
+                      ["left", "Esquerda"], ["center-x", "Centro horizontal"], ["right", "Direita"],
+                      ["top", "Topo"], ["center-y", "Centro vertical"], ["bottom", "Base"],
+                    ] as Array<[Alignment, string]>).map(([operation, label]) => (
+                      <button key={operation} aria-label={`Alinhar ${label.toLowerCase()}`} title={`Alinhar ${label.toLowerCase()}`} disabled={editableSelected.length < 2} onClick={() => arrange(operation)}>{label}</button>
+                    ))}
+                  </div>
+                  <div className="arrange-grid distribute-grid">
+                    <button disabled={editableSelected.length < 3} onClick={() => arrange("horizontal")}>Distribuir ↔</button>
+                    <button disabled={editableSelected.length < 3} onClick={() => arrange("vertical")}>Distribuir ↕</button>
+                  </div>
+                  <div className="template-actions">
+                    <button disabled={editableSelected.length < 2} onClick={() => toggleGroup(false)}>Agrupar · Ctrl+G</button>
+                    <button disabled={!selected.some((id) => scene.items.find((item) => item.id === id)?.groupId)} onClick={() => toggleGroup(true)}>Desagrupar · Ctrl+Shift+G</button>
+                  </div>
+                </section>
                 <label>Cor da borda</label>
                 <div className="swatches">
                   {colors.map((c) => (
@@ -2662,7 +3419,7 @@ function App({ initial }: { initial: Library }) {
                         onFocus={checkpoint}
                         onChange={(e) => updateScene((s) => ({
                           ...s,
-                          items: s.items.map((i) => selected.includes(i.id) ? { ...i, textColor: e.target.value } : i),
+                          items: s.items.map((i) => editableSelection(s.items, selected).includes(i.id) ? withAutoHeight(i, { textColor: e.target.value }) : i),
                         }))}
                       />
                     </label>
@@ -2706,12 +3463,10 @@ function App({ initial }: { initial: Library }) {
                         onClick={() =>
                           change((s) => ({
                             ...s,
-                            items: [
-                              ...s.items.filter(
-                                (i) => !selected.includes(i.id),
-                              ),
-                              ...s.items.filter((i) => selected.includes(i.id)),
-                            ],
+                            items: (() => {
+                              const ids = new Set(expandGroupIds(s.items, selected));
+                              return [...s.items.filter((i) => !ids.has(i.id)), ...s.items.filter((i) => ids.has(i.id))];
+                            })(),
                           }))
                         }
                       >
@@ -2723,12 +3478,10 @@ function App({ initial }: { initial: Library }) {
                         onClick={() =>
                           change((s) => ({
                             ...s,
-                            items: [
-                              ...s.items.filter((i) => selected.includes(i.id)),
-                              ...s.items.filter(
-                                (i) => !selected.includes(i.id),
-                              ),
-                            ],
+                            items: (() => {
+                              const ids = new Set(expandGroupIds(s.items, selected));
+                              return [...s.items.filter((i) => ids.has(i.id)), ...s.items.filter((i) => !ids.has(i.id))];
+                            })(),
                           }))
                         }
                       >
@@ -2755,37 +3508,19 @@ function App({ initial }: { initial: Library }) {
                           max="60"
                           value={sel.size}
                           onPointerDown={checkpoint}
-                          onChange={(e) =>
-                            updateScene((s) => ({
-                              ...s,
-                              items: s.items.map((i) =>
-                                selected.includes(i.id)
-                                  ? { ...i, size: +e.target.value }
-                                  : i,
-                              ),
-                            }))
-                          }
+                          onChange={(e) => patch({ size: +e.target.value })}
                         />
                         {selected.length === 1 && (
                           <>
-                            <label htmlFor="element-text">Texto do elemento</label>
+                            <label htmlFor="element-text">{sel.type === "frame" ? "Título do frame" : "Texto do elemento"}</label>
                             <textarea
                               id="element-text"
-                              aria-label="Texto do elemento no painel Estilo"
+                              aria-label={sel.type === "frame" ? "Título do frame" : "Texto do elemento no painel Estilo"}
                               className="element-text-editor"
                               rows={4}
                               value={sel.text}
                               onFocus={checkpoint}
-                              onChange={(e) =>
-                                updateScene((s) => ({
-                                  ...s,
-                                  items: s.items.map((i) =>
-                                    i.id === sel.id
-                                      ? { ...i, text: e.target.value }
-                                      : i,
-                                  ),
-                                }))
-                              }
+                              onChange={(e) => patchItem(sel.id, { text: e.target.value })}
                             />
                             <label htmlFor="element-font">Fonte</label>
                             <select
@@ -2794,19 +3529,7 @@ function App({ initial }: { initial: Library }) {
                               value={sel.fontFamily || "Caveat"}
                               style={{ fontFamily: fontStacks[sel.fontFamily || "Caveat"] }}
                               onFocus={checkpoint}
-                              onChange={(e) =>
-                                updateScene((s) => ({
-                                  ...s,
-                                  items: s.items.map((i) =>
-                                    i.id === sel.id
-                                      ? {
-                                          ...i,
-                                          fontFamily: e.target.value as Item["fontFamily"],
-                                        }
-                                      : i,
-                                  ),
-                                }))
-                              }
+                              onChange={(e) => patchItem(sel.id, { fontFamily: e.target.value as Item["fontFamily"] })}
                             >
                               {fontGroups.map((group) => (
                                 <optgroup key={group.label} label={group.label}>
@@ -2818,6 +3541,16 @@ function App({ initial }: { initial: Library }) {
                                 </optgroup>
                               ))}
                             </select>
+                            <div className="text-formatting" aria-label="Formatação do texto">
+                              <div className="format-toggle-row">
+                                <button aria-label="Negrito" aria-pressed={!!sel.bold} className={sel.bold ? "active" : ""} onClick={() => patch({ bold: !sel.bold })}><strong>B</strong></button>
+                                <button aria-label="Itálico" aria-pressed={!!sel.italic} className={sel.italic ? "active" : ""} onClick={() => patch({ italic: !sel.italic })}><em>I</em></button>
+                                {(["left", "center", "right"] as const).map((alignment) => <button key={alignment} aria-label={`Alinhar texto à ${alignment === "left" ? "esquerda" : alignment === "right" ? "direita" : "centro"}`} aria-pressed={(sel.textAlign || "left") === alignment} className={(sel.textAlign || "left") === alignment ? "active" : ""} onClick={() => patch({ textAlign: alignment })}>{alignment === "left" ? "≡" : alignment === "center" ? "≋" : "≡"}</button>)}
+                              </div>
+                              <label>Entrelinha <span>{(sel.lineHeight || 1.1).toFixed(1)}×</span></label>
+                              <input aria-label="Espaçamento entre linhas" type="range" min="0.8" max="2" step="0.1" value={sel.lineHeight || 1.1} onPointerDown={checkpoint} onChange={(event) => patchItem(sel.id, { lineHeight: +event.target.value })} />
+                              <label className="check-setting"><input type="checkbox" aria-label="Ajustar altura automaticamente" checked={!!sel.autoHeight} onChange={(event) => patch({ autoHeight: event.target.checked })} /> Ajustar altura automaticamente</label>
+                            </div>
                           </>
                         )}
                         {sel.type === "agent" && selected.length === 1 && (
@@ -2828,16 +3561,7 @@ function App({ initial }: { initial: Library }) {
                               aria-label="Símbolo dentro do cartão Agente"
                               value={sel.icon || ""}
                               onFocus={checkpoint}
-                              onChange={(e) =>
-                                updateScene((s) => ({
-                                  ...s,
-                                  items: s.items.map((i) =>
-                                    i.id === sel.id
-                                      ? { ...i, icon: e.target.value || undefined }
-                                      : i,
-                                  ),
-                                }))
-                              }
+                              onChange={(e) => patchItem(sel.id, { icon: e.target.value || undefined })}
                             >
                               <option value="">Padrão do cartão</option>
                               {[...new Set(iconCatalog.map((entry) => entry.category))].map(
@@ -2880,16 +3604,7 @@ function App({ initial }: { initial: Library }) {
                                     ? "#e0ebe1"
                                     : "#162c23"}
                                 onFocus={checkpoint}
-                                onChange={(e) =>
-                                  updateScene((s) => ({
-                                    ...s,
-                                    items: s.items.map((i) =>
-                                      i.id === sel.id
-                                        ? { ...i, fill: e.target.value }
-                                        : i,
-                                    ),
-                                  }))
-                                }
+                                onChange={(e) => patchItem(sel.id, { fill: e.target.value })}
                               />
                             </div>
                             <div className="swatches fill-swatches">
@@ -2915,21 +3630,24 @@ function App({ initial }: { initial: Library }) {
                               max="100"
                               value={Math.round((sel.fillOpacity ?? (sel.type === "note" ? 0.9 : 1)) * 100)}
                               onPointerDown={checkpoint}
-                              onChange={(e) =>
-                                updateScene((s) => ({
-                                  ...s,
-                                  items: s.items.map((i) =>
-                                    i.id === sel.id
-                                      ? { ...i, fillOpacity: +e.target.value / 100 }
-                                      : i,
-                                  ),
-                                }))
-                              }
+                              onChange={(e) => patchItem(sel.id, { fillOpacity: +e.target.value / 100 })}
                             />
                           </>
                         )}
                       </>
                     )}
+                    <section className="saved-styles" aria-label="Estilos reutilizáveis">
+                      <div className="panel-subheading">Estilos reutilizáveis</div>
+                      <button className="save-style-button" disabled={!editableSelected.length} onClick={() => setNameDialog({ kind: "style", value: "Meu estilo" })}>Salvar aparência atual</button>
+                      <p className="field-help">Salvos neste projeto. Aplicar mantém texto, posição, dimensões, mídia e animação.</p>
+                      {(activeProject.styles || []).map((style) => (
+                        <div className="saved-style-row" key={style.id}>
+                          <button title={`Aplicar estilo ${style.name}`} onClick={() => applyStyleToSelection(style)} disabled={!editableSelected.length}><span style={{ background: style.properties.color }} />{style.name}</button>
+                          <button aria-label={`Excluir estilo ${style.name}`} title={`Excluir estilo ${style.name}`} onClick={() => deleteSavedStyle(style)}>×</button>
+                        </div>
+                      ))}
+                      {!activeProject.styles?.length && <small>Nenhum estilo salvo neste projeto.</small>}
+                    </section>
                     <AnimationControls
                       item={sel}
                       patch={patch}
@@ -3072,27 +3790,21 @@ function App({ initial }: { initial: Library }) {
           </button>
         )}
       </main>
-      {selected.length > 0 && !present && (
-        <div className="selection-bar">
-          <span>
-            {selected.length} selecionado{selected.length > 1 ? "s" : ""}
-          </span>
-          <button
-            title="Editar estilo"
-            onClick={() => {
-              setTab("style");
-              setSidebar(true);
-            }}
-          >
-            <Settings2 size={15} />
-          </button>
-          <button title="Duplicar" onClick={duplicate}>
-            <Copy size={15} />
-          </button>
-          <button title="Excluir" onClick={deleteSelected}>
-            <Trash2 size={15} />
-          </button>
-        </div>
+      {pdfPreview && (
+        <PdfViewer
+          key={pdfPreview.assetId}
+          assetId={pdfPreview.assetId}
+          name={pdfPreview.name}
+          onClose={() => setPdfPreview(null)}
+        />
+      )}
+      {linkPreview && (
+        <LinkPreview
+          url={linkPreview.url}
+          title={linkPreview.title}
+          onClose={() => setLinkPreview(null)}
+          onOpenExternal={openLink}
+        />
       )}
       {help && (
         <div className="modal-backdrop" onClick={() => setHelp(false)}>

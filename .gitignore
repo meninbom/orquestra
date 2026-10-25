@@ -4,6 +4,7 @@ dist/
 *.tsbuildinfo
 release/
 desktop/library.cjs
+public/pdfjs/
 .qa/
 .env
 .env.*

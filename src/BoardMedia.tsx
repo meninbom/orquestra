@@ -6,6 +6,7 @@ import {
   Link2,
   Loader2,
   AlertCircle,
+  Eye,
 } from "lucide-react";
 import { type Item } from "./model";
 import { getAsset, openLink, saveAsset } from "./media";
@@ -14,21 +15,27 @@ export function BoardMedia({
   interactive,
   active,
   color,
+  onOpenPdf,
+  onOpenLink,
 }: {
   item: Item;
   interactive: boolean;
   active: boolean;
   color: string;
+  onOpenPdf: (id: string) => void;
+  onOpenLink: () => void;
 }) {
   const [url, setUrl] = useState(""),
     [error, setError] = useState("");
   const media = useRef<HTMLMediaElement | null>(null);
+  const isPdf = item.type === "file" &&
+    ((item.assetMime || "").toLowerCase().includes("pdf") || item.assetName?.toLowerCase().endsWith(".pdf"));
   useEffect(() => {
     let canceled = false,
       object = "";
     setUrl("");
     setError("");
-    if (!item.assetId) return;
+    if (!item.assetId || isPdf) return;
     getAsset(item.assetId)
       .then((a) => {
         if (canceled) return;
@@ -42,7 +49,7 @@ export function BoardMedia({
       canceled = true;
       if (object) URL.revokeObjectURL(object);
     };
-  }, [item.assetId]);
+  }, [item.assetId, isPdf]);
   useEffect(() => {
     const element = media.current;
     if (!element) return;
@@ -89,7 +96,7 @@ export function BoardMedia({
           height: "100%",
           color,
           borderColor: color + "70",
-          pointerEvents: interactive ? "auto" : "none",
+          pointerEvents: interactive || isPdf || item.type === "link" ? "auto" : "none",
         }}
       >
         {error ? (
@@ -148,8 +155,15 @@ export function BoardMedia({
             <FileText size={30} />
             <div>
               <strong>{item.assetName}</strong>
-              <small>Arquivo anexado</small>
+              <small>{isPdf ? "Documento PDF" : "Arquivo anexado"}</small>
+              {isPdf && (
+                <button aria-label={`Visualizar PDF ${item.assetName}`} onPointerDown={(event) => event.stopPropagation()} onClick={() => onOpenPdf(item.assetId!)}>
+                  <Eye size={13} />
+                  Visualizar PDF
+                </button>
+              )}
               <button
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => {
                   void saveAsset(item.assetId!).catch((e) =>
                     setError(e.message),
@@ -167,7 +181,12 @@ export function BoardMedia({
             <div>
               <strong>{item.text || new URL(item.url!).hostname}</strong>
               <small>{new URL(item.url!).hostname}</small>
+              <button onPointerDown={(event) => event.stopPropagation()} onClick={onOpenLink}>
+                <Eye size={13} />
+                Pré-visualizar
+              </button>
               <button
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => {
                   void openLink(item.url!).catch((e) => setError(e.message));
                 }}
@@ -184,7 +203,7 @@ export function BoardMedia({
           </div>
         )}
         {!interactive &&
-          ["video", "audio", "file", "link"].includes(item.type) && (
+          ["video", "audio", "file"].includes(item.type) && !isPdf && (
             <div className="media-interact-hint">
               Duplo clique para interagir
             </div>

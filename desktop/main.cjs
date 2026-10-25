@@ -9,6 +9,9 @@ const {
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const { LibraryStore } = require("./storage.cjs");
+const { VersionStore } = require("./versions.cjs");
+const { validPdfPages, exportBoardPdfToFile } = require("./pdf.cjs");
+const { installYoutubePreviewReferer } = require("./youtube-preview.cjs");
 
 app.setName("Orquestra");
 const testPath = process.argv.find((arg) =>
@@ -18,6 +21,7 @@ if (testPath)
   app.setPath("userData", path.resolve(testPath.split("=").slice(1).join("=")));
 let mainWindow,
   store,
+  versionStore,
   closeApproved = false,
   requestingClose = false;
 const singleInstance = app.requestSingleInstanceLock();
@@ -31,6 +35,7 @@ else {
   });
   app.whenReady().then(() => {
     store = new LibraryStore(app.getPath("userData"));
+    versionStore = new VersionStore(app.getPath("userData"));
     mainWindow = new BrowserWindow({
       width: 1440,
       height: 940,
@@ -50,6 +55,7 @@ else {
       },
     });
     Menu.setApplicationMenu(null);
+    installYoutubePreviewReferer(mainWindow.webContents.session, () => mainWindow);
     const trusted = (event) => {
       if (
         event.sender !== mainWindow.webContents ||
@@ -117,6 +123,44 @@ else {
       trusted(event);
       return store.save(value);
     });
+    ipcMain.handle("versions:list", (event, projectId) => {
+      trusted(event);
+      return versionStore.list(projectId);
+    });
+    ipcMain.handle("versions:save", (event, value) => {
+      trusted(event);
+      return versionStore.save(value);
+    });
+    ipcMain.handle("versions:delete", (event, projectId, versionId) => {
+      trusted(event);
+      return versionStore.delete(projectId, versionId);
+    });
+    ipcMain.handle("pdf:export-board", async (event, title, pages) => {
+      trusted(event);
+      if (
+        typeof title !== "string" ||
+        title.length > 200 ||
+        !validPdfPages(pages)
+      )
+        throw new Error("Conteúdo do PDF inválido ou grande demais.");
+      const fileName = (title || "Orquestra")
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+        .trim()
+        .slice(0, 100) || "Orquestra";
+      if (testPath) {
+        const directory = path.join(store.directory, "exports");
+        await fs.mkdir(directory, { recursive: true });
+        await exportBoardPdfToFile(BrowserWindow, pages, path.join(directory, fileName + ".pdf"));
+        return true;
+      }
+      const choice = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: path.join(app.getPath("documents"), fileName + ".pdf"),
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (choice.canceled || !choice.filePath) return false;
+      await exportBoardPdfToFile(BrowserWindow, pages, choice.filePath);
+      return true;
+    });
     ipcMain.handle("library:folder", async (event) => {
       trusted(event);
       await fs.mkdir(store.directory, { recursive: true });
@@ -162,6 +206,12 @@ else {
         ].includes(extension)
       )
         throw new Error("Formato não permitido.");
+      if (testPath) {
+        const directory = path.join(store.directory, "exports");
+        await fs.mkdir(directory, { recursive: true });
+        await fs.writeFile(path.join(directory, path.basename(name)), data);
+        return true;
+      }
       const choice = await dialog.showSaveDialog(mainWindow, {
         defaultPath: path.join(app.getPath("documents"), path.basename(name)),
         filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
@@ -173,7 +223,7 @@ else {
     ipcMain.handle("app:complete-close", async (event) => {
       trusted(event);
       if (!requestingClose) return;
-      await store.queue;
+      await Promise.all([store.queue, versionStore.queue]);
       closeApproved = true;
       mainWindow.close();
     });

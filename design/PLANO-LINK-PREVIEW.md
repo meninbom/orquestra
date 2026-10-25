@@ -1,0 +1,55 @@
+# Preview seguro de links
+
+## Integração aplicada
+
+1. `src/main.tsx` importa `LinkPreview` de `./LinkPreview.tsx` com extensão explícita para evitar ambiguidade entre o componente e o helper `linkPreview.ts` no Windows. O estado global da prévia guarda URL/título.
+2. `BoardMedia` recebe `onOpenLink`, mantém o botão externo e oferece **Pré-visualizar** sem carregar iframe no cartão. O duplo clique também abre a prévia por `editItem` no editor.
+3. `main.tsx` monta `LinkPreview` somente quando aberto. O componente usa portal em `document.body`, evitando recorte pelo `foreignObject` do canvas. Fechar limpa o estado; o guard dos atalhos do editor também reconhece os modais PDF/link.
+4. O callback deve continuar sendo `openLink` de `src/media.ts`. Ele aplica `safeLink` e encaminha para `window.orquestraDesktop.openLink` no Electron ou `window.open(..., "noopener,noreferrer")` no navegador. Não passe `window.orquestraDesktop` ao componente nem adicione integração remota ao preload.
+5. Preserve `item.url` sem normalizar na persistência. `normalizePreviewLink` guarda a URL original em `originalUrl` e usa uma URL separada apenas como `iframe.src`. Não altere os formatos de board, backup ou projeto.
+
+### Integração desktop para identidade do YouTube
+
+- O renderer abre o player em uma janela Electron cujo documento local é carregado de `file://`. Esse contexto não fornece por si só um `HTTP Referer` utilizável para o player; `referrerPolicy="strict-origin-when-cross-origin"` evita suprimi-lo em contextos que já têm uma origem HTTP, mas não cria uma identidade para o app.
+- A documentação do YouTube pede um `Referer` com a identidade registrada do aplicativo e orienta apps desktop/WebView a defini-lo como header. O erro `153` indica ausência desse header ou identidade equivalente. `origin=` é um parâmetro da IFrame API; não substitui a identidade exigida.
+- A identidade está confirmada para esta instalação: evidência ao vivo fornecida pelo pai, `Get-StartApps` retorna `Orquestra` com AppID `app.orquestra.whiteboard`, igual a `build.appId` em `package.json`. A decisão é interpretar o requisito geral do YouTube para distribuição alternativa como o ID registrado pelo Windows na instalação. A subseção específica de Windows não-store menciona o `Name` de uma identidade de pacote; esta build usa NSIS Win32 e não tem manifesto MSIX. O AppID registrado no Windows fornece a identidade disponível para essa distribuição, então a ausência de `Name` MSIX não bloqueia o uso de `https://app.orquestra.whiteboard/`. Esta é uma interpretação documentada com a evidência local, não uma afirmação de que a página do YouTube cita NSIS/Electron nominalmente.
+- O helper `desktop/youtube-preview.cjs` separa a decisão/transformação pura de headers e o instalador de `session.webRequest.onBeforeSendHeaders`. Só adiciona `Referer: https://app.orquestra.whiteboard/` para `resourceType === "subFrame"`, HTTPS, host exato `youtube-nocookie.com` ou `www.youtube-nocookie.com`, caminho `/embed/<11 caracteres>` sem credenciais e porta diferente da padrão, `webContentsId` da janela principal e frame requisitante diretamente filho de `mainWindow.webContents.mainFrame`. Os demais headers são preservados; `Referer` preexistente é substituído sem distinção de maiúsculas. Não modifica pedidos top-frame, páginas gerais, embeds aninhados ou conteúdo remoto, e não altera segurança web.
+- Instrução para integrar após a edição de `desktop/main.cjs` terminar: importe `installYoutubePreviewReferer` de `./youtube-preview.cjs` e chame `installYoutubePreviewReferer(mainWindow.webContents.session, () => mainWindow)` depois de criar `mainWindow` e antes de `loadFile`. Reconfira o estado final de `main.cjs` antes de instalar: o Electron documenta que só o último listener anexado a `onBeforeSendHeaders` fica ativo. Se outro listener tiver sido adicionado, não registre um segundo listener independente; aplique `withYoutubePreviewReferer(details, details.requestHeaders, mainWindow?.webContents)` dentro do listener central existente e passe o resultado ao callback dele.
+- Ao validar a integração Windows, inspecione o request HTTP do player e o `Referer` efetivamente enviado, então valide reprodução com um vídeo que permita incorporação. A existência do `<iframe>` ou a navegação ao endpoint `/embed/` não prova playback; erros do próprio YouTube, como vídeo privado ou incorporação bloqueada, continuam possíveis. Sites que bloquearem iframe continuam usando o botão **Abrir no navegador**; board e mídia local mantêm suporte offline.
+
+Referências primárias: [identidade do player e requisitos Windows do YouTube](https://developers.google.com/youtube/terms/required-minimum-functionality), [erro 153 da IFrame API](https://developers.google.com/youtube/iframe_api_reference), [Electron `webRequest`](https://www.electronjs.org/docs/latest/api/web-request), [Electron `WebFrameMain.parent`](https://www.electronjs.org/docs/latest/api/web-frame-main), [electron-builder `appId` para NSIS](https://www.electron.build/docs/win/), [CoreWebView2 `SetHeader`](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2httprequestheaders?view=webview2-1.0.4022.49) e [HTML sandbox/origens](https://html.spec.whatwg.org/multipage/iframe-embed-object.html).
+
+## Comportamento e segurança
+
+- Só aceita URL HTTPS válida, sem credenciais ou caracteres de controle.
+- YouTube `watch`, `youtu.be`, `shorts` e `embed` usam `www.youtube-nocookie.com`. O iframe não é criado até a pessoa clicar em **Reproduzir vídeo**; o player mostra controles e permite fullscreen.
+- Outras páginas carregam em um iframe sandbox sem `allow-same-origin`, sem acesso ao DOM da aplicação e sem ponte Electron. O iframe não recebe permissão de câmera, microfone, geolocalização ou navegação de topo. A exceção de `allow-same-origin` e recursos de mídia é limitada ao host fixo `www.youtube-nocookie.com`, necessário ao player confiável; essa política não vale para URLs gerais.
+- O botão **Abrir no navegador** permanece disponível. Não se tenta detectar bloqueios de incorporação por `iframe.onerror`: X-Frame-Options/CSP podem bloquear sem um evento de erro confiável.
+- O quadro e arquivos locais continuam abrindo offline; a prévia de conteúdo web depende de internet e informa essa condição.
+- O modal captura os eventos de teclado no documento e interrompe a propagação para os atalhos globais do quadro, mantendo o comportamento nativo de formulários e Tab. Escape sai da tela cheia ou da expansão CSS antes de fechar. Ao sair da tela cheia, o foco retorna ao botão de ampliar; ao fechar, retorna ao elemento que abriu a prévia. O botão de fechar permanece visível mesmo quando o foco está no player; eventos de teclado dentro do documento cross-origin do iframe não podem ser inspecionados pela aplicação.
+- O botão **Ampliar prévia** usa a Fullscreen API com fallback de expansão CSS em execução local que não aceite fullscreen. O botão de ampliar e o botão de fechar continuam disponíveis.
+
+## Verificação deste módulo
+
+- `tests/link-preview.test.cjs` cobre as variantes YouTube suportadas, hosts parecidos, preservação da URL original, remoção de parâmetros externos do player, HTTPS e rejeição de URLs inválidas/credenciadas.
+- `tests/youtube-preview.test.cjs` cobre a política desktop isoladamente: URL e ID exatos, esquema/host sem distinção de caixa, credenciais, portas, `resourceType`, frame direto/aninhado, `webContentsId`, preservação/substituição case-insensitive de `Referer`, instalação idempotente e callback do Electron. Esse teste prova a transformação local, não o envio observado no processo Electron nem playback.
+- O mesmo teste verifica a separação da política de sandbox entre YouTube e páginas comuns e os contratos de Escape, isolamento dos atalhos e expansão fullscreen/fallback no componente.
+- A suíte existente inclui o teste novo por `node --test tests/*.test.cjs`; o módulo de normalização é compilado em memória com o `esbuild` já instalado, sem alterar o script de build compartilhado.
+- Um harness de QA isolado em `.qa` exercita abertura/fechamento, eventos Delete, Escape e ampliação no browser; ele não substitui a validação no app empacotado Windows nem prova reprodução real do YouTube.
+- `.qa/youtube-preview-electron` usa o `LinkPreview` existente, o helper desktop e uma sessão Electron em memória; o `userData` fica num diretório temporário e nenhum perfil real é aberto. Execução: `node .qa/youtube-preview-electron/bundle.mjs` e `.qa/youtube-preview-electron/run.ps1`; o script usa e remove um manifesto temporário dentro do próprio harness. Nesta rodada, `onSendHeaders` observou o request real `https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?...` com `Referer: https://app.orquestra.whiteboard/`; no frame do player, `readyState=4`, `paused=false` e `currentTime≈0.64s`. O playback foi confirmado nesse harness isolado, mas não no `main.cjs` integrado nem no executável NSIS.
+
+## Limites
+
+- Vários sites deliberadamente proíbem iframes via X-Frame-Options ou CSP `frame-ancestors`; nesses casos, use **Abrir no navegador**. O app não consegue identificar esse bloqueio de forma confiável.
+- O sandbox restritivo pode impedir login, armazenamento local e partes interativas de alguns sites. Isso é intencional para manter o conteúdo remoto isolado.
+- O player depende da conectividade e das políticas do próprio YouTube/navegador. Não existe autoplay no carregamento do board ou da prévia; o parâmetro de autoplay só é enviado depois da ação explícita de reproduzir.
+- Sites podem impedir a reprodução de um vídeo específico ou exigir login. O fallback externo continua disponível.
+
+## Revisão principal integrada
+
+- `desktop/main.cjs` instala `installYoutubePreviewReferer` antes de carregar o documento local, sem outro listener concorrente de headers.
+- O teste `tests/link-preview-flow.mjs` é chamado pela regressão completa e pode rodar isoladamente com `ORQUESTRA_TEST_LINK_ONLY=1`. Usa perfil temporário, uma seção no projeto existente, página HTTPS interceptada e abertura externa interceptada para não iniciar o navegador real.
+- A revisão principal confirmou botão/duplo clique, sandbox, foco/atalhos/expansão, URL original persistente após reload, header real e playback no app integrado. No pacote `release/win-unpacked/Orquestra.exe`, o vídeo chegou a `readyState=4`, despausado e com tempo avançando, sem erros de runtime. Evidência: `.qa/release-1.5.0-smoke.json`.
+- A expansão CSS começa imediatamente porque uma solicitação fullscreen negada pode ficar pendente no Electron. Escape sai da ampliação antes de fechar, mantendo o foco no controle correto.
+- Links comuns dependem das políticas do site. O teste interceptado valida o visualizador; não afirma compatibilidade com todos os sites da internet.
+- A regressão completa passou também na instalação Windows 1.5.0 com `ORQUESTRA_TEST_YOUTUBE_PLAYBACK=1`: request com identificação correta e vídeo real despausado, `readyState=4`, tempo avançando e nenhum erro de runtime. Evidência: `.qa/installed-1.5.0-smoke.json`.

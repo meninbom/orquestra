@@ -4,34 +4,27 @@ import {
   initialLibrary,
   validLibrary,
 } from "./library";
+import { type ProjectVersion } from "./versions";
+
+type DesktopApi = {
+  loadLibrary(): Promise<Library | null>;
+  saveLibrary(value: Library): Promise<void>;
+  saveFile(name: string, data: Uint8Array): Promise<boolean>;
+  dataFolder(): Promise<void>;
+  onRequestClose(callback: () => void): () => void;
+  completeClose(): Promise<void>;
+  putAsset(value: { id: string; name: string; mime: string; size: number; data: Uint8Array }): Promise<void>;
+  getAsset(id: string): Promise<{ id: string; name: string; mime: string; size: number; data: Uint8Array }>;
+  openLink(url: string): Promise<void>;
+  listVersions(projectId: string): Promise<ProjectVersion[]>;
+  saveVersion(version: ProjectVersion): Promise<void>;
+  deleteVersion(projectId: string, versionId: string): Promise<void>;
+  exportBoardPdf(title: string, pages: string[]): Promise<boolean>;
+};
 
 declare global {
   interface Window {
-    orquestraDesktop?: {
-      loadLibrary(): Promise<Library | null>;
-      saveLibrary(value: Library): Promise<void>;
-      saveFile(name: string, data: Uint8Array): Promise<boolean>;
-      dataFolder(): Promise<void>;
-      onRequestClose(callback: () => void): () => void;
-      completeClose(): Promise<void>;
-      putAsset(value: {
-        id: string;
-        name: string;
-        mime: string;
-        size: number;
-        data: Uint8Array;
-      }): Promise<void>;
-      getAsset(
-        id: string,
-      ): Promise<{
-        id: string;
-        name: string;
-        mime: string;
-        size: number;
-        data: Uint8Array;
-      }>;
-      openLink(url: string): Promise<void>;
-    };
+    orquestraDesktop?: DesktopApi;
   }
 }
 

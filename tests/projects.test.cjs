@@ -139,3 +139,35 @@ test("atomic storage serializes writes, preserves backup, rejects invalid data a
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("library saves recover from transient Windows locks and preserve data on persistent locks", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "orquestra-store-lock-"));
+  try {
+    const first = initialLibrary();
+    const second = structuredClone(first);
+    second.projects[0].board.title = "Após bloqueio";
+    const stable = new LibraryStore(dir);
+    await stable.save(first);
+    let attempts = 0;
+    const transient = new LibraryStore(dir, { ...fs, rename: async (...args) => {
+      if (++attempts <= 2) throw Object.assign(new Error("Windows file lock"), { code: "EPERM" });
+      return fs.rename(...args);
+    } });
+    await transient.save(second);
+    assert.equal(attempts, 3);
+    assert.deepEqual(await stable.load(), second);
+    assert.deepEqual(JSON.parse(await fs.readFile(stable.file + ".bak", "utf8")), first);
+    const locked = new LibraryStore(dir, { ...fs, rename: async () => {
+      throw Object.assign(new Error("Persistent lock"), { code: "EPERM" });
+    } });
+    await assert.rejects(locked.save(first), /Persistent lock/);
+    assert.deepEqual(await stable.load(), second);
+    assert.deepEqual(JSON.parse(await fs.readFile(stable.file + ".bak", "utf8")), second);
+    await stable.save(first);
+    assert.deepEqual(await stable.load(), first);
+  } finally {
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(dir).startsWith("orquestra-store-lock-"));
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

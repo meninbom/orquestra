@@ -7,6 +7,11 @@ const {
   itemBounds,
   selectionBounds,
   arrowGeometry,
+  connectionTargetAt,
+  frameTitleBounds,
+  portAnchor,
+  portForDirection,
+  reconnectArrowEndpoint,
   translateSelection,
   copySelection,
   readSelection,
@@ -107,6 +112,41 @@ test("connected arrows are hit at rendered endpoints, not their stored zero coor
   const bounds = selectionBounds(items, ["a", "b", "edge"]);
   assert.equal(bounds.x, 100);
   assert.equal(bounds.w, 400);
+});
+test("connector ports sit on shape edges, reject unsafe targets and reconnect without losing free endpoints", () => {
+  const a = item("a", "rect", 100, 100, 120, 80),
+    b = item("b", "rect", 400, 100, 100, 70),
+    ellipse = item("ellipse", "ellipse", 260, 300, 140, 60),
+    locked = item("locked", "rect", 520, 300, 80, 60, { locked: true }),
+    hidden = item("hidden", "rect", 620, 300, 80, 60, { hidden: true }),
+    edge = item("edge", "arrow", 0, 0, 0, 0, { from: "a", to: "b", fromPort: "east", toPort: "west" });
+  const items = [a, b, ellipse, locked, hidden, edge];
+  assert.deepEqual(portAnchor(a, "east"), { x: 220, y: 140 });
+  assert.deepEqual(portAnchor(ellipse, "north"), { x: 330, y: 300 });
+  assert.equal(portForDirection(a, { x: 400, y: 140 }), "east");
+  assert.equal(portForDirection(a, { x: 160, y: 20 }), "north");
+  assert.deepEqual(arrowGeometry(edge, items).start, { x: 220, y: 140 });
+  assert.deepEqual(arrowGeometry(edge, items).end, { x: 400, y: 135 });
+  assert.equal(connectionTargetAt(items, { x: 550, y: 330 }), undefined, "locked objects are not connection targets");
+  assert.equal(connectionTargetAt(items, { x: 650, y: 330 }), undefined, "hidden objects are not connection targets");
+  const toEllipse = reconnectArrowEndpoint(edge, items, "to", { x: 330, y: 300 }, ellipse);
+  assert.equal(toEllipse.to, "ellipse");
+  assert.equal(toEllipse.toPort, "north");
+  assert.deepEqual(arrowGeometry(toEllipse, [...items, toEllipse]).end, { x: 330, y: 300 });
+  const free = reconnectArrowEndpoint(toEllipse, [...items, toEllipse], "to", { x: 475, y: 220 });
+  assert.equal(free.to, undefined);
+  assert.equal(free.toPort, undefined);
+  assert.deepEqual(arrowGeometry(free, [...items, free]).end, { x: 475, y: 220 });
+  assert.equal(reconnectArrowEndpoint(edge, items, "to", { x: 1, y: 1 }, a).to, "b", "a connector cannot self-link to its other endpoint");
+});
+test("frames expose a selectable title above the border while empty interiors remain transparent", () => {
+  const frame = item("frame", "frame", 100, 140, 300, 220, { text: "Resumo\nExecutivo", size: 20 });
+  const title = frameTitleBounds(frame);
+  assert.ok(title.y < frame.y && title.h > 40);
+  assert.deepEqual(itemsInArea([frame], { x: 108, y: title.y, w: 120, h: title.h }), ["frame"]);
+  assert.deepEqual(itemsInArea([frame], { x: 170, y: 180, w: 40, h: 40 }), []);
+  assert.equal(connectionTargetAt([frame], { x: 250, y: 142 }, [], 3)?.id, "frame");
+  assert.equal(connectionTargetAt([frame], { x: 250, y: 200 }, [], 3), undefined, "frame interior stays out of connector snapping");
 });
 test("group translation preserves internal connections and moves unbound ink and media together", () => {
   const items = [

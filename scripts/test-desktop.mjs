@@ -14,7 +14,7 @@ try {
     ["tests/desktop-smoke.cjs", `--orquestra-test-data=${profile}`],
     { env, stdio: "inherit", windowsHide: true },
   );
-  const timeout = setTimeout(() => child.kill(), 45000);
+  const timeout = setTimeout(() => child.kill(), 240000);
   const code = await new Promise((resolve) => child.on("exit", resolve));
   clearTimeout(timeout);
   console.log(await readFile(output, "utf8"));

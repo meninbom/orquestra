@@ -1,8 +1,10 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, dialog } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const assert = require("node:assert/strict");
 const { setTimeout: delay } = require("node:timers/promises");
+let pdfPath;
+dialog.showSaveDialog = async () => ({ canceled: false, filePath: pdfPath });
 require("../desktop/main.cjs");
 app.removeAllListeners("window-all-closed");
 app.on("window-all-closed", () => {});
@@ -41,6 +43,7 @@ app.whenReady().then(async () => {
     assert.equal(initial.node, "undefined");
     assert.equal(initial.items, 12);
     assert.ok(initial.fonts.every((status) => status === "loaded"));
+    pdfPath = path.join(app.getPath("userData"), "board-acceptance.pdf");
     await run(`document.querySelector('.projects-trigger').click()`);
     await waitFor(
       () => run('!!document.querySelector(".projects-modal")'),
@@ -84,6 +87,33 @@ app.whenReady().then(async () => {
       "reload from disk",
     );
     assert.equal(await run("!!window.orquestraDesktop"), true);
+    win.webContents.debugger.attach("1.3");
+    const cdp = (method, params = {}) => win.webContents.debugger.sendCommand(method, params);
+    const runCdp = async (expression) => {
+      const result = await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true });
+      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+      return result.result.value;
+    };
+    const { testFeatures } = await import("./features-flow.mjs");
+    const featureEvidence = await testFeatures({ cdp, run: runCdp, waitFor, profile: app.getPath("userData") });
+    const expectedPageTitles = await runCdp(`window.orquestraDesktop.loadLibrary().then(value=>value.projects.find(project=>project.id===value.activeId).board.scenes.map(scene=>scene.name))`);
+    const exportTitle = await run('document.querySelector(".document-title").value');
+    const exportFileName = exportTitle.replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").trim().slice(0, 100) || "Orquestra";
+    pdfPath = path.join(app.getPath("userData"), "exports", exportFileName + ".pdf");
+    await run("document.querySelector('.export-button').click()");
+    await waitFor(() => run('!![...document.querySelectorAll(".dropdown button")].find(button=>button.textContent.includes("Exportar board inteiro"))'), "board PDF action is available");
+    await run('([...document.querySelectorAll(".dropdown button")].find(button=>button.textContent.includes("Exportar board inteiro"))?.click())');
+    await waitFor(async () => {
+      try { return (await fs.readFile(pdfPath)).subarray(0, 4).toString() === "%PDF"; }
+      catch { return false; }
+    }, "real board PDF is written by the Electron export flow");
+    const pdf = await fs.readFile(pdfPath);
+    const pageObjects = (pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) || []).length;
+    assert.equal(pdf.subarray(0, 4).toString(), "%PDF");
+    assert.equal(pageObjects, expectedPageTitles.length, "PDF pages correspond to the active board sections");
+    const pdfEvidence = { file: ".qa/board-acceptance.pdf", bytes: pdf.length, pageTitles: expectedPageTitles };
+    await fs.mkdir(path.resolve(".qa"), { recursive: true });
+    await fs.copyFile(pdfPath, path.resolve(".qa/board-acceptance.pdf"));
     // Close immediately after an edit: the close handshake must flush the latest project.
     await run(
       `(()=>{const input=document.querySelector('.document-title');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Última edição antes de fechar');input.dispatchEvent(new Event('input',{bubbles:true}));})()`,
@@ -107,6 +137,7 @@ app.whenReady().then(async () => {
           projects: final.projects.length,
           closeFlush: true,
           reloadFromDisk: true,
+          pdf: { ...pdfEvidence, signature: pdf.subarray(0, 4).toString(), pageObjects: (pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) || []).length },
           errors,
         },
         null,

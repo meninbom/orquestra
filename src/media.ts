@@ -44,6 +44,31 @@ export const supportedFiles = Object.keys(mimeMap)
   .join(",");
 export const fileMime = (file: File) =>
   mimeMap[file.name.split(".").at(-1)?.toLowerCase() || ""] || file.type;
+function sanitizedSvg(source: string): Blob {
+  const document = new DOMParser().parseFromString(source, "image/svg+xml");
+  if (
+    document.querySelector("parsererror") ||
+    document.documentElement.localName !== "svg"
+  )
+    throw new Error("Imagem SVG inválida.");
+  document
+    .querySelectorAll(
+      "script,foreignObject,iframe,object,embed,style,animate,set",
+    )
+    .forEach((element) => element.remove());
+  document.querySelectorAll("*").forEach((element) => {
+    for (const attribute of [...element.attributes])
+      if (
+        /^on/i.test(attribute.name) ||
+        attribute.name === "style" ||
+        (/href$/i.test(attribute.name) && !attribute.value.startsWith("#"))
+      )
+        element.removeAttribute(attribute.name);
+  });
+  return new Blob([new XMLSerializer().serializeToString(document)], {
+    type: "image/svg+xml",
+  });
+}
 export function mediaKind(mime: string): Item["type"] {
   return mime.startsWith("image/")
     ? "image"
@@ -128,34 +153,7 @@ export async function storeFile(file: File): Promise<AssetMeta> {
     throw new Error(`${file.name}: limite de 100 MB por arquivo.`);
   let blob: Blob = file;
   const mime = fileMime(file);
-  if (mime === "image/svg+xml") {
-    const document = new DOMParser().parseFromString(
-      await file.text(),
-      "image/svg+xml",
-    );
-    if (
-      document.querySelector("parsererror") ||
-      document.documentElement.localName !== "svg"
-    )
-      throw new Error("Imagem SVG inválida.");
-    document
-      .querySelectorAll(
-        "script,foreignObject,iframe,object,embed,style,animate,set",
-      )
-      .forEach((e) => e.remove());
-    document.querySelectorAll("*").forEach((e) => {
-      for (const a of [...e.attributes])
-        if (
-          /^on/i.test(a.name) ||
-          a.name === "style" ||
-          (/href$/i.test(a.name) && !a.value.startsWith("#"))
-        )
-          e.removeAttribute(a.name);
-    });
-    blob = new Blob([new XMLSerializer().serializeToString(document)], {
-      type: mime,
-    });
-  }
+  if (mime === "image/svg+xml") blob = sanitizedSvg(await file.text());
   const asset: Asset = {
     id: uid(),
     name: file.name,
@@ -240,7 +238,12 @@ export async function portablePayload(value: Library | Board) {
     : [value as Board];
   const assets: PackedAsset[] = [];
   let bytes = 0;
-  for (const id of referenced(boards)) {
+  const ids = new Set(referenced(boards));
+  if (validLibrary(value))
+    for (const template of value.templates || [])
+      for (const item of template.scene.items)
+        if (item.assetId) ids.add(item.assetId);
+  for (const id of ids) {
     const asset = await getAsset(id);
     bytes += asset.size;
     if (bytes > MAX_BACKUP)
@@ -298,27 +301,34 @@ export async function importPayload(
       throw new Error("O backup excede o limite de mídia.");
     const id = uid();
     remapped.set(asset.id, id);
+    const blob = asset.mime === "image/svg+xml"
+      ? sanitizedSvg(new TextDecoder().decode(array))
+      : new Blob([array], { type: asset.mime });
     prepared.push({
       id,
       name: asset.name,
       mime: asset.mime,
-      size: array.length,
-      blob: new Blob([array], { type: asset.mime }),
+      size: blob.size,
+      blob,
     });
   }
   const cloned = JSON.parse(JSON.stringify(content)) as Library | Board;
   const boards = validLibrary(cloned)
     ? cloned.projects.map((p) => p.board)
     : [cloned as Board];
-  for (const id of referenced(boards))
+  const allScenes = [
+    ...boards.flatMap((board) => board.scenes),
+    ...(validLibrary(cloned) ? (cloned.templates || []).map((template) => template.scene) : []),
+  ];
+  const allAssetIds = new Set(referenced(boards));
+  for (const scene of allScenes) for (const item of scene.items) if (item.assetId) allAssetIds.add(item.assetId);
+  for (const id of allAssetIds)
     if (!remapped.has(id)) {
       await getAsset(id);
     }
-  for (const board of boards)
-    for (const scene of board.scenes)
-      for (const item of scene.items)
-        if (item.assetId && remapped.has(item.assetId))
-          item.assetId = remapped.get(item.assetId);
+  for (const scene of allScenes)
+    for (const item of scene.items)
+      if (item.assetId && remapped.has(item.assetId)) item.assetId = remapped.get(item.assetId);
   for (const asset of prepared) await put(asset);
   return importProjects(library, cloned);
 }
