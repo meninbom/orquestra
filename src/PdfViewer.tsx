@@ -3,16 +3,10 @@ import { AlertCircle, Download, FileText, Maximize, Minus, Plus, X } from "lucid
 import * as pdfjs from "pdfjs-dist";
 import { getAsset, saveAsset } from "./media";
 import "./pdf-viewer.css";
+import { createPdfDocumentTask } from "./pdfPreview";
 
 type PasswordUpdater = (password: string) => void;
 type FitMode = "width" | "page";
-
-let workerConfigured = false;
-function configureLocalWorker() {
-  if (workerConfigured) return;
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs/pdf.worker.min.mjs", window.location.href).href;
-  workerConfigured = true;
-}
 
 export function PdfViewer({ assetId, name, onClose }: { assetId: string; name: string; onClose: () => void }) {
   const [document, setDocument] = useState<any>(null);
@@ -35,7 +29,6 @@ export function PdfViewer({ assetId, name, onClose }: { assetId: string; name: s
 
   useEffect(() => {
     let disposed = false;
-    configureLocalWorker();
     setDocument(null);
     setError("");
     setLoading(true);
@@ -47,19 +40,7 @@ export function PdfViewer({ assetId, name, onClose }: { assetId: string; name: s
         throw new Error("O arquivo selecionado não é um PDF.");
       const bytes = new Uint8Array(await asset.blob.arrayBuffer());
       if (disposed) return;
-      const base = new URL("pdfjs/", window.location.href).href;
-      const task = pdfjs.getDocument({
-        data: bytes,
-        enableXfa: false,
-        useSystemFonts: true,
-        useWasm: false,
-        useWorkerFetch: true,
-        cMapUrl: `${base}cmaps/`,
-        cMapPacked: true,
-        standardFontDataUrl: `${base}standard_fonts/`,
-        wasmUrl: `${base}wasm/`,
-        iccUrl: `${base}iccs/`,
-      } as any);
+      const task = createPdfDocumentTask(bytes);
       loadingTask.current = task;
       task.onProgress = ({ loaded, total }: { loaded: number; total: number }) => {
         if (!disposed && total > 0) setProgress(Math.min(100, Math.round(loaded / total * 100)));

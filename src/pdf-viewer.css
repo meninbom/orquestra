@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   padding: 22px;
-  background: #020907d9;
+  background: #000000d9;
   backdrop-filter: blur(7px);
   font-family: "DM Sans", sans-serif;
 }
@@ -81,7 +81,7 @@
 .pdf-viewer button:hover:not(:disabled),
 .pdf-viewer button[aria-pressed="true"] {
   border-color: var(--line);
-  background: var(--surface-hover, #26362f);
+  background: var(--hover);
   color: var(--text);
 }
 .pdf-viewer button:disabled {
@@ -130,7 +130,7 @@
   overflow: auto;
   overscroll-behavior: contain;
   padding: 10px 8px 30px;
-  background: #101714;
+  background: var(--bg);
   scrollbar-gutter: stable;
 }
 .pdf-pages {
@@ -173,7 +173,7 @@
   inset: 0;
   display: grid;
   place-items: center;
-  color: #59665f;
+  color: #666666;
   font-size: 12px;
   pointer-events: none;
 }

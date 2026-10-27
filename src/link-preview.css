@@ -5,9 +5,9 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgb(2 8 6 / 82%);
+  background: rgb(0 0 0 / 82%);
   backdrop-filter: blur(8px);
-  color: #dce7e0;
+  color: #ededed;
   color-scheme: dark;
 }
 
@@ -23,9 +23,9 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid #314139;
+  border: 1px solid #2e2e2e;
   border-radius: 14px;
-  background: #0c1412;
+  background: #000000;
   box-shadow: 0 24px 100px rgb(0 0 0 / 55%);
 }
 
@@ -47,8 +47,8 @@
   justify-content: space-between;
   gap: 16px;
   padding: 10px 14px 10px 20px;
-  border-bottom: 1px solid #27332e;
-  background: #101917;
+  border-bottom: 1px solid #2e2e2e;
+  background: #0a0a0a;
 }
 
 .link-preview-heading,
@@ -77,7 +77,7 @@
 
 .link-preview-host {
   overflow: hidden;
-  color: #91a49a;
+  color: #a1a1a1;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -89,10 +89,10 @@
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid #31483b;
+  border: 1px solid #2e2e2e;
   border-radius: 9px;
-  background: #16231c;
-  color: #8fe3b5;
+  background: #171717;
+  color: #ededed;
 }
 
 .link-preview-open,
@@ -104,17 +104,17 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border: 1px solid #34443b;
+  border: 1px solid #2e2e2e;
   border-radius: 8px;
-  color: #dce7e0;
-  background: #15201a;
+  color: #ededed;
+  background: #171717;
   font: inherit;
   cursor: pointer;
 }
 
 .link-preview-open {
   padding: 0 12px;
-  color: #bde9ce;
+  color: #ededed;
 }
 
 .link-preview-close {
@@ -131,8 +131,8 @@
 .link-preview-open:hover,
 .link-preview-close:hover,
 .link-preview-expand:hover {
-  border-color: #678472;
-  background: #1b2a21;
+  border-color: #666666;
+  background: #262626;
 }
 
 .link-preview-open:disabled {
@@ -148,7 +148,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: #080d0b;
+  background: #000000;
 }
 
 .link-preview-web-frame {
@@ -185,7 +185,7 @@
 
 .link-preview-youtube-prompt > span,
 .link-preview-invalid > span {
-  color: #91a49a;
+  color: #a1a1a1;
   line-height: 1.5;
 }
 
@@ -194,24 +194,24 @@
   height: 72px;
   display: grid;
   place-items: center;
-  border: 1px solid #52715e;
+  border: 1px solid #2e2e2e;
   border-radius: 50%;
-  background: #16271e;
-  color: #a5edbf;
+  background: #171717;
+  color: #ededed;
 }
 
 .link-preview-play {
   min-height: 42px;
   margin-top: 8px;
   padding: 0 18px;
-  border-color: #88d7a5;
-  background: #245c3c;
-  color: #f0fff4;
+  border-color: #ededed;
+  background: #ededed;
+  color: #0a0a0a;
   font-weight: 650;
 }
 
 .link-preview-play:hover {
-  background: #2b7049;
+  background: #cccccc;
 }
 
 .link-preview-invalid {
@@ -225,8 +225,8 @@
   justify-content: space-between;
   gap: 16px;
   padding: 10px 18px;
-  border-top: 1px solid #27332e;
-  background: #101917;
+  border-top: 1px solid #2e2e2e;
+  background: #0a0a0a;
 }
 
 .link-preview-note,
@@ -235,7 +235,7 @@
   align-items: flex-start;
   gap: 8px;
   margin: 0;
-  color: #a3b3aa;
+  color: #a1a1a1;
   font-size: 11px;
   line-height: 1.45;
 }
@@ -243,7 +243,7 @@
 .link-preview-note svg {
   margin-top: 1px;
   flex: 0 0 auto;
-  color: #8fe3b5;
+  color: #ededed;
 }
 
 .link-preview-error {
@@ -252,7 +252,7 @@
 }
 
 .link-preview-dialog :focus-visible {
-  outline: 2px solid #8fe3b5;
+  outline: 2px solid #ededed;
   outline-offset: 3px;
 }
 

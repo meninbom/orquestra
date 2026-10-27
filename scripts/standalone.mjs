@@ -1,6 +1,9 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 
 const assets = readdirSync("dist/assets");
+if (assets.filter((name) => name.endsWith(".js")).length !== 1) {
+  throw new Error("O HTML desktop exige um único bundle JavaScript; use imports estáticos no ponto de entrada.");
+}
 const css = readFileSync(
   `dist/assets/${assets.find((n) => n.endsWith(".css"))}`,
   "utf8",

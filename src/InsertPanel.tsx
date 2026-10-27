@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   X,
   Search,
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { iconCatalog } from "./icons";
 import { supportedFiles, safeLink } from "./media";
+import { ModalDialog } from "./ModalDialog";
 export function InsertPanel({
   initialTab = "icons",
   onIcon,
@@ -35,16 +36,6 @@ export function InsertPanel({
     [title, setTitle] = useState(""),
     [error, setError] = useState("");
   const file = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        if (!busy) onClose();
-      }
-    };
-    window.addEventListener("keydown", key, true);
-    return () => window.removeEventListener("keydown", key, true);
-  }, [busy, onClose]);
   const normalized = (v: string) =>
     v
       .normalize("NFD")
@@ -56,19 +47,8 @@ export function InsertPanel({
       normalized(i.label + " " + i.name).includes(normalized(query)),
   );
   return (
-    <div
-      className="modal-backdrop"
-      onClick={() => {
-        if (!busy) onClose();
-      }}
-    >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-label="Inserir conteúdo"
-        className="insert-modal"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalDialog label="Inserir conteúdo" onClose={() => { if (!busy) onClose(); }}>
+      <section className="insert-modal">
         <div className="insert-heading">
           <div>
             <span className="projects-kicker">DÊ FORMA ÀS SUAS IDEIAS</span>
@@ -269,6 +249,6 @@ export function InsertPanel({
           }}
         />
       </section>
-    </div>
+    </ModalDialog>
   );
 }

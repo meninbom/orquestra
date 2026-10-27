@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { renderBoardPages } from "./boardExport";
@@ -35,7 +35,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Keyboard,
-  GripVertical,
   Settings2,
   FolderOpen,
   Save,
@@ -122,7 +121,16 @@ import { VersionManager } from "./VersionManager";
 import { normalizePreviewLink } from "./previewLink";
 import { LayerPanel } from "./LayerPanel";
 import { ConfirmDialog, NameDialog } from "./ActionDialog";
+import { ModalDialog, isModalDialogOpen } from "./ModalDialog";
+import { SectionTemplateDialog } from "./SectionTemplateDialog";
+import { resolveItemTextColor } from "./itemAppearance";
+import { renderWindowBounds, visibleRenderItemIds } from "./renderWindow";
+import { PresenterPanel } from "./PresenterPanel";
+import { AudienceView } from "./AudienceView";
+import { LaserTrail, type LaserTrailHandle } from "./LaserTrail";
+import type { PresenterState } from "./presenterProtocol";
 import "./style.css";
+import "./presenter.css";
 
 const tools: { id: Tool; label: string; key: string; icon: typeof Square }[] = [
   { id: "select", label: "Selecionar", key: "V", icon: MousePointer2 },
@@ -140,7 +148,7 @@ const tools: { id: Tool; label: string; key: string; icon: typeof Square }[] = [
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const measure = document.createElement("canvas").getContext("2d")!;
 const accentOptions = [
-  { id: "mint", color: "#8fe3b5", label: "Menta" },
+  { id: "mint", color: "#ededed", label: "Neutro" },
   { id: "blue", color: "#83b9ed", label: "Azul" },
   { id: "violet", color: "#c2a1ed", label: "Violeta" },
   { id: "coral", color: "#f09a8b", label: "Coral" },
@@ -175,8 +183,7 @@ const fontGroups: { label: string; families: NonNullable<Item["fontFamily"]>[] }
   { label: "Manuscritas", families: ["Caveat", "Comic Sans MS", "Segoe Print", "Segoe Script"] },
   { label: "Destaque", families: ["Impact"] },
 ];
-const itemTextColor = (i: Item) =>
-  i.textColor ?? (i.type === "note" ? "#19342a" : i.color);
+const itemTextColor = (i: Item) => i.textColor ?? (i.type === "note" ? "#19342a" : i.color);
 function wrapText(i: Item): string[] {
   return wrapItemText(
     i,
@@ -198,6 +205,8 @@ function withAutoHeight(item: Item, values: Partial<Item>): Item {
 type ConnectorPreview =
   | { kind: "create"; fromId: string; fromPort: ArrowPort; start: { x: number; y: number }; point: { x: number; y: number }; targetId?: string; targetPort?: ArrowPort }
   | { kind: "endpoint"; arrowId: string; endpoint: "from" | "to"; point: { x: number; y: number }; targetId?: string; targetPort?: ArrowPort };
+
+const MemoizedSceneItems = React.memo(({ items }: { items: React.ReactNode[] }) => <>{items}</>);
 
 function App({ initial }: { initial: Library }) {
   const [library, setLibrary] = useState<Library>(initial);
@@ -227,12 +236,16 @@ function App({ initial }: { initial: Library }) {
   const [versionProjectId, setVersionProjectId] = useState<string | null>(null);
   const [alignmentGuides, setAlignmentGuides] = useState<Guide[]>([]);
   const [connectorPreview, setConnectorPreview] = useState<ConnectorPreview | null>(null);
+  const [exportAllItems, setExportAllItems] = useState(false);
+  const visibleItemIdsRef = useRef<Set<string>>(new Set());
   const [connectionEdit, setConnectionEdit] = useState<{ arrowId: string; endpoint: "from" | "to" } | null>(null);
   const [hoveredConnectorItem, setHoveredConnectorItem] = useState<string | null>(null);
-  const [templateChoice, setTemplateChoice] = useState("");
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [pdfPreview, setPdfPreview] = useState<{ assetId: string; name: string } | null>(null);
   const [linkPreview, setLinkPreview] = useState<{ url: string; title: string } | null>(null);
-  const [youtubePlaybackId, setYoutubePlaybackId] = useState<string | null>(null);
+  const [youtubePlaybackIds, setYoutubePlaybackIds] = useState<string[]>([]);
+  const startYoutube = (id: string) => setYoutubePlaybackIds((ids) => ids.includes(id) ? ids : [...ids, id]);
+  const stopYoutube = (id: string) => setYoutubePlaybackIds((ids) => ids.filter((playingId) => playingId !== id));
   const initialTemplates = useRef(builtInTemplates()).current;
   const templates = [...initialTemplates, ...(library.templates || [])];
   const [insertTab, setInsertTab] = useState<string | null>(null),
@@ -257,6 +270,12 @@ function App({ initial }: { initial: Library }) {
     [present, setPresent] = useState(false),
     [playing, setPlaying] = useState(false),
     [step, setStep] = useState(0),
+    [audienceOpen, setAudienceOpen] = useState(false),
+    [presenterFullscreen, setPresenterFullscreen] = useState(false),
+    [laserEnabled, setLaserEnabled] = useState(false),
+    [presenterMinimized, setPresenterMinimized] = useState(false),
+    laserTrail = useRef<LaserTrailHandle>(null),
+    presenterWasFullscreen = useRef(false),
     [help, setHelp] = useState(false),
     [exports, setExports] = useState(false),
     [light, setLight] = useState(
@@ -282,6 +301,10 @@ function App({ initial }: { initial: Library }) {
     [saved, setSaved] = useState(true),
     [view, setView] = useState({ x: 0, y: 0, z: 1 }),
     [smooth, setSmooth] = useState(false);
+  const clearLaser = () => {
+    laserTrail.current?.push(null);
+    window.orquestraPresenter?.laser(null);
+  };
   const svgRef = useRef<SVGSVGElement>(null),
     canvasRef = useRef<HTMLDivElement>(null),
     fileRef = useRef<HTMLInputElement>(null),
@@ -326,6 +349,7 @@ function App({ initial }: { initial: Library }) {
     };
   }, []);
   const sceneRef = useRef<Scene | null>(null);
+  const sectionListRef = useRef<HTMLDivElement>(null);
   const scene = board.scenes.find((s) => s.id === sceneId) || board.scenes[0],
     index = board.scenes.indexOf(scene),
     sel = scene.items.find((i) => selected.includes(i.id)),
@@ -333,6 +357,15 @@ function App({ initial }: { initial: Library }) {
       scene.subtitle ?? (index === 0 ? defaultSectionSubtitle : ""),
     maxStep = Math.max(0, ...scene.items.filter((i) => !i.hidden).map((i) => i.step));
   sceneRef.current = scene;
+  useEffect(() => {
+    const list = sectionListRef.current;
+    if (!list) return;
+    const revealActive = () => list.querySelector<HTMLElement>(".section-row.active")?.scrollIntoView({ block: "nearest" });
+    const observer = new ResizeObserver(revealActive);
+    observer.observe(list);
+    revealActive();
+    return () => observer.disconnect();
+  }, [scene.id, tab, sidebar]);
   useEffect(() => {
     const presentIds = new Set(scene.items.map((i) => i.id));
     setSelected((ids) =>
@@ -348,9 +381,11 @@ function App({ initial }: { initial: Library }) {
     }
   }, [connectionEdit, selected, scene.id, scene.items]);
   useEffect(() => {
-    if (youtubePlaybackId && (selected.length !== 1 || !selected.includes(youtubePlaybackId) || !scene.items.some((item) => item.id === youtubePlaybackId && item.type === "link")))
-      setYoutubePlaybackId(null);
-  }, [youtubePlaybackId, selected, scene.id, scene.items]);
+    setYoutubePlaybackIds((ids) => {
+      const next = ids.filter((id) => scene.items.some((item) => item.id === id && item.type === "link" && !item.hidden));
+      return next.length === ids.length ? ids : next;
+    });
+  }, [scene.id, scene.items]);
   useEffect(() => {
     try {
       localStorage.setItem("orquestra-theme", light ? "light" : "dark");
@@ -384,7 +419,7 @@ function App({ initial }: { initial: Library }) {
     } catch (error) {
       setSaveError(true);
       notify(
-        "Falha ao salvar. Exporte um backup antes de fechar. " +
+        "Falha ao salvar. Exporte um pacote de recuperação emergencial antes de fechar. " +
           (error as Error).message,
       );
       throw error;
@@ -524,7 +559,7 @@ function App({ initial }: { initial: Library }) {
     setPlaying(false);
     setStep(0);
     setInteractId(null);
-    setYoutubePlaybackId(null);
+    setYoutubePlaybackIds([]);
     setConnectionEdit(null);
     setConnectorPreview(null);
     setSelectedHeading(null);
@@ -640,7 +675,7 @@ function App({ initial }: { initial: Library }) {
       ms: next.transitionMs || 500,
     });
     setInteractId(null);
-    setYoutubePlaybackId(null);
+    setYoutubePlaybackIds([]);
     setConnectionEdit(null);
     setConnectorPreview(null);
     gesture.current = null;
@@ -653,6 +688,14 @@ function App({ initial }: { initial: Library }) {
     setStep(0);
     fit();
   };
+  const previousPresentation = () => {
+    if (step > 0) { setStep((value) => Math.max(0, value - 1)); return; }
+    if (index <= 0) return;
+    const previousScene = board.scenes[index - 1];
+    const lastStep = previousScene.items.reduce((max, item) => item.hidden ? max : Math.max(max, item.step || 0), 0);
+    go(index - 1);
+    setStep(lastStep);
+  };
   const advance = () => {
     if (step < maxStep) setStep((s) => s + 1);
     else if (index < board.scenes.length - 1) go(index + 1);
@@ -661,6 +704,63 @@ function App({ initial }: { initial: Library }) {
       notify("Fim da apresentação");
     }
   };
+  const presenterSnapshot = useCallback((): PresenterState => {
+    const { presenterNotes: _notes, ...publicScene } = scene as Scene & { presenterNotes?: string };
+    return { scene: publicScene as PresenterState["scene"], index: Math.max(0, index), step, light, playing };
+  }, [scene, index, step, light, playing]);
+  const latestPresenterSnapshot = useRef<PresenterState | null>(null);
+  const lastPublishedSnapshot = useRef("");
+  const publishErrorShown = useRef(false);
+  const publishRetryAfter = useRef(0);
+  latestPresenterSnapshot.current = presenterSnapshot();
+  useEffect(() => {
+    if (!present || !audienceOpen || !window.orquestraPresenter) return;
+    lastPublishedSnapshot.current = "";
+    const timer = window.setInterval(() => {
+      const snapshot = latestPresenterSnapshot.current;
+      if (!snapshot) return;
+      if (Date.now() < publishRetryAfter.current) return;
+      const serialized = JSON.stringify(snapshot);
+      if (serialized === lastPublishedSnapshot.current) return;
+      lastPublishedSnapshot.current = serialized;
+      void window.orquestraPresenter!.publish(snapshot).then(() => { publishErrorShown.current = false; }).catch(() => {
+        lastPublishedSnapshot.current = "";
+        publishRetryAfter.current = Date.now() + 1000;
+        if (!publishErrorShown.current) { publishErrorShown.current = true; notify("Falha ao atualizar a tela do público."); }
+      });
+    }, 67);
+    return () => window.clearInterval(timer);
+  }, [present, audienceOpen]);
+  useEffect(() => {
+    const sync = () => setPresenterFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+  useEffect(() => {
+    if (!audienceOpen || !canvasRef.current) return;
+    const original = new Map<HTMLMediaElement, boolean>();
+    const mute = () => canvasRef.current?.querySelectorAll<HTMLMediaElement>("audio,video").forEach((media) => {
+      if (!original.has(media)) original.set(media, media.muted);
+      media.muted = true;
+      media.pause();
+    });
+    mute();
+    const observer = new MutationObserver(mute);
+    observer.observe(canvasRef.current, { childList: true, subtree: true });
+    return () => { observer.disconnect(); original.forEach((muted, media) => { if (media.isConnected) media.muted = muted; }); };
+  }, [audienceOpen, scene.id]);
+  useEffect(() => {
+    const api = window.orquestraPresenter;
+    if (!api) return;
+    const offClose = api.onAudienceClosed(() => { setAudienceOpen(false); setPlaying(false); setLaserEnabled(false); clearLaser(); void api.setFullscreen(presenterWasFullscreen.current).catch(() => notify("Não foi possível restaurar a tela cheia.")); });
+    const offFullscreen = api.onFullscreen(setPresenterFullscreen);
+    const offCommand = api.onCommand((command) => {
+      if (command === "next") advance();
+      else if (command === "previous") previousPresentation();
+      else stopPresentation();
+    });
+    return () => { offClose(); offFullscreen(); offCommand(); };
+  }, [index, step, advance, previousPresentation]);
   useEffect(() => {
     if (!playing || !present) return;
     const t = setTimeout(
@@ -670,16 +770,46 @@ function App({ initial }: { initial: Library }) {
     return () => clearTimeout(t);
   }, [playing, present, step, scene.id, index, scene.duration]);
   const startPresentation = () => {
+    if (!present) presenterWasFullscreen.current = presenterFullscreen || !!document.fullscreenElement;
     setPresent(true);
     setStep(0);
     setSelected([]);
     setSelectedHeading(null);
     setConnectionEdit(null);
     setConnectorPreview(null);
-    setYoutubePlaybackId(null);
     setPlaying(false);
+    setLaserEnabled(false);
+    clearLaser();
+    setPresenterMinimized(false);
     setEditing(null);
     fit();
+  };
+  const openAudience = async () => {
+    if (!window.orquestraPresenter) { notify("A segunda tela está disponível no aplicativo desktop."); return; }
+    if (!present) presenterWasFullscreen.current = presenterFullscreen || !!document.fullscreenElement;
+    setPresent(true);
+    try {
+      const result = await window.orquestraPresenter.openAudience();
+      setAudienceOpen(result.opened);
+      if (result.opened) notify(result.displayCount > 1 ? "Tela do público aberta no segundo monitor; console privado nesta janela." : "Tela do público aberta em janela separada.");
+      else notify("Não foi possível abrir a tela do público.");
+    } catch { notify("Não foi possível abrir a tela do público."); }
+  };
+  const stopPresentation = () => {
+    setPresent(false); setPlaying(false); setLaserEnabled(false); clearLaser();
+    if (audienceOpen) void window.orquestraPresenter?.closeAudience().catch(() => notify("Não foi possível fechar a tela do público."));
+    setAudienceOpen(false);
+    if (window.orquestraPresenter) void window.orquestraPresenter.setFullscreen(presenterWasFullscreen.current).catch(() => notify("Não foi possível restaurar a tela cheia."));
+    else if (presenterWasFullscreen.current && !document.fullscreenElement) void document.documentElement.requestFullscreen?.().catch(() => notify("Não foi possível restaurar a tela cheia."));
+    else if (!presenterWasFullscreen.current && document.fullscreenElement) void document.exitFullscreen().catch(() => notify("Não foi possível sair da tela cheia."));
+  };
+  const togglePresenterFullscreen = async () => {
+    const next = !presenterFullscreen;
+    try {
+      if (window.orquestraPresenter) await window.orquestraPresenter.setFullscreen(next);
+      else if (next) await document.documentElement.requestFullscreen?.();
+      else if (document.fullscreenElement) await document.exitFullscreen?.();
+    } catch { notify("Não foi possível alterar a tela cheia."); }
   };
   const deleteItems = (requested: string[]) => {
     if (!requested.length) return;
@@ -786,6 +916,11 @@ function App({ initial }: { initial: Library }) {
       notify("Use um nome de até 100 caracteres.");
       return;
     }
+    const active = libraryRef.current.projects.find((project) => project.id === libraryRef.current.activeId);
+    if ((active?.styles?.length || 0) >= 200) {
+      notify("Este projeto já tem 200 estilos. Exclua um estilo antes de salvar outro.");
+      return;
+    }
     const style: SavedStyle = { id: uid(), name: requestedName.trim(), properties: styleProperties(item) };
     setLibrary((current) => ({
       ...current,
@@ -830,9 +965,11 @@ function App({ initial }: { initial: Library }) {
       const inserted = insertTemplateScene(template, board.title, board.scenes.length);
       checkpoint();
       setBoard((current) => ({ ...current, scenes: [...current.scenes, inserted] }));
+      sceneRef.current = inserted;
       setSceneId(inserted.id);
+      fit();
       setSelected([]);
-      setTemplateChoice(template.id);
+      setTemplatePickerOpen(false);
       notify(`Seção “${template.name}” inserida como uma cópia independente.`);
     } catch (error) {
       notify((error as Error).message);
@@ -840,9 +977,12 @@ function App({ initial }: { initial: Library }) {
   };
   const saveSceneTemplate = (requestedName: string) => {
     try {
+      if ((libraryRef.current.templates?.length || 0) >= 200) {
+        notify("A biblioteca já tem 200 modelos. Exclua um modelo antes de salvar outro.");
+        return;
+      }
       const template = saveSceneAsTemplate(scene, requestedName);
       setLibrary((current) => ({ ...current, templates: [...(current.templates || []), template] }));
-      setTemplateChoice(template.id);
       notify(`Modelo “${template.name}” salvo na biblioteca.`);
     } catch (error) {
       notify((error as Error).message);
@@ -856,13 +996,12 @@ function App({ initial }: { initial: Library }) {
       confirmLabel: "Excluir",
       action: () => {
         setLibrary((current) => ({ ...current, templates: (current.templates || []).filter((saved) => saved.id !== template.id) }));
-        if (templateChoice === template.id) setTemplateChoice("");
       },
     });
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (document.querySelector('[data-pdf-viewer], .link-preview-dialog')) return;
+      if (isModalDialogOpen() || document.querySelector('[data-pdf-viewer], .link-preview-dialog')) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         void saveNow().catch(() => {});
@@ -877,14 +1016,14 @@ function App({ initial }: { initial: Library }) {
         setProjectsOpen((v) => !v);
         return;
       }
-      if (projectsOpen || insertTab) return;
+      if (projectsOpen || insertTab || templatePickerOpen) return;
       if (
         (e.target as HTMLElement)?.closest("[data-media-control]") &&
         e.key !== "Escape"
       )
         return;
       if (
-        (e.target as HTMLElement)?.matches(
+        e.key !== "Escape" && (e.target as HTMLElement)?.matches(
           'input,textarea,select,[contenteditable="true"]',
         )
       )
@@ -901,24 +1040,19 @@ function App({ initial }: { initial: Library }) {
           setConnectorPreview(null);
           return;
         }
-        if (youtubePlaybackId) {
-          e.preventDefault();
-          setYoutubePlaybackId(null);
-          return;
-        }
         if (selectedHeading) {
           e.preventDefault();
           setSelectedHeading(null);
           return;
         }
-        setPresent(false);
-        setPlaying(false);
+        if (present) { stopPresentation(); return; }
+        if (audienceOpen) { void window.orquestraPresenter?.closeAudience().catch(() => notify("Não foi possível fechar a tela do público.")); setAudienceOpen(false); }
+        setPresent(false); setPlaying(false); setLaserEnabled(false); clearLaser();
         setSelected([]);
         setEditing(null);
         setHelp(false);
         setExports(false);
         setInteractId(null);
-        setYoutubePlaybackId(null);
         setPreviewMotion(false);
       }
       if (gesture.current) return;
@@ -939,7 +1073,7 @@ function App({ initial }: { initial: Library }) {
           advance();
         }
         if (e.key === "ArrowLeft")
-          step > 0 ? setStep((s) => s - 1) : go(index - 1);
+          previousPresentation();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
@@ -1018,11 +1152,11 @@ function App({ initial }: { initial: Library }) {
     index,
     maxStep,
     projectsOpen,
-    insertTab,
+    templatePickerOpen,    insertTab,
     saveNow,
     connectionEdit,
-    youtubePlaybackId,
     selectedHeading,
+    audienceOpen,
   ]);
   const point = (e: { clientX: number; clientY: number }) => {
     const matrix = svgRef.current
@@ -1097,7 +1231,7 @@ function App({ initial }: { initial: Library }) {
   const down = (e: React.PointerEvent) => {
     if (
       (e.target as Element).closest("[data-media-control]") &&
-      (present || interactId)
+      (present || (!!interactId && (e.target as Element).closest("[data-item]")?.getAttribute("data-item") === interactId))
     )
       return;
     if (present || e.button === 2 || gesture.current) return;
@@ -1135,7 +1269,6 @@ function App({ initial }: { initial: Library }) {
         setConnectorPreview(null);
         setSelectedHeading(null);
         const ids = expandGroupIds(scene.items, selected);
-        if (youtubePlaybackId && ids.includes(youtubePlaybackId)) setYoutubePlaybackId(null);
         gesture.current = { kind: "selection-resize", p, handle, bounds, ids, items: clone(scene.items), dragging: false, checkpoint: false };
       }
       return;
@@ -1219,7 +1352,6 @@ function App({ initial }: { initial: Library }) {
         const editable = new Set(editableSelection(scene.items, ids));
         const resize = (e.target as Element).getAttribute("data-resize") !== null;
         const targetItem = scene.items.find((item) => item.id === target);
-        if (resize && youtubePlaybackId === target) setYoutubePlaybackId(null);
         gesture.current = {
           kind: !editable.has(target) ? "select-only" : resize && !targetItem?.groupId ? "resize" : "move",
           p,
@@ -1289,6 +1421,11 @@ function App({ initial }: { initial: Library }) {
     }
   };
   const move = (e: React.PointerEvent) => {
+    if (present && laserEnabled) {
+      const p = point(e);
+      laserTrail.current?.push(p);
+      if (audienceOpen) window.orquestraPresenter?.laser(p);
+    }
     const g = gesture.current;
     if (!g) {
       if (connectionEdit) {
@@ -1608,7 +1745,7 @@ function App({ initial }: { initial: Library }) {
       try { youtube = normalizePreviewLink(i.url).kind === "youtube"; } catch {}
       if (youtube) {
         setSelected(itemSelection(scene.items, i.id));
-        setYoutubePlaybackId(i.id);
+        startYoutube(i.id);
       } else setLinkPreview({ url: i.url, title: i.text });
       return;
     }
@@ -1709,6 +1846,8 @@ function App({ initial }: { initial: Library }) {
     return () => el.removeEventListener("wheel", wheel);
   }, []);
   const addScene = () => {
+    if (board.scenes.length >= 200) { notify("O projeto pode ter até 200 seções."); return; }
+    setTemplatePickerOpen(false);
     const s: Scene = {
       id: uid(),
       name: "Nova seção",
@@ -1801,8 +1940,11 @@ function App({ initial }: { initial: Library }) {
       await exportBoardPdf();
       return;
     }
+    setExportAllItems(true);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     const original = svgRef.current!,
       copy = original.cloneNode(true) as SVGSVGElement;
+    setExportAllItems(false);
     copy.setAttribute("xmlns", "http://www.w3.org/2000/svg");
     copy.setAttribute("width", "1440");
     copy.setAttribute("height", "1000");
@@ -1815,7 +1957,7 @@ function App({ initial }: { initial: Library }) {
     bg.setAttribute("y", "-50");
     bg.setAttribute("width", "1260");
     bg.setAttribute("height", "875");
-    bg.setAttribute("fill", light ? "#f4f7f3" : "#0c1412");
+    bg.setAttribute("fill", light ? "#f4f7f3" : "#000000");
     copy.insertBefore(bg, copy.firstChild);
     const fontStyle = document.createElementNS(
       "http://www.w3.org/2000/svg",
@@ -1888,7 +2030,7 @@ function App({ initial }: { initial: Library }) {
         text.setAttribute("y", String(item.y + 36));
         text.setAttribute("font-size", "20");
         text.setAttribute("font-family", "DM Sans");
-        text.setAttribute("fill", mappedColor(itemTextColor(item)));
+        text.setAttribute("fill", resolveItemTextColor({ ...item, fill: light ? "#e0ebe1" : "#162c23" }, light));
         text.textContent = (
           item.assetName ||
           item.text ||
@@ -2094,11 +2236,32 @@ function App({ initial }: { initial: Library }) {
       notify("Backup não gerado: " + (e as Error).message);
     }
   };
+  const recoveryExport = async () => {
+    try {
+      if (mediaPending.current) await mediaPending.current;
+      const payload = await portablePayload(libraryRef.current, { emergency: true });
+      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+      const filename = "orquestra-recuperacao-emergencial.json";
+      const missingCount = payload.missingAssets?.length || 0;
+      const warningCount = payload.warnings?.length || 0;
+      const recoveryMessage = `Pacote de recuperação emergencial parcial salvo. Mídias ausentes: ${missingCount}. Avisos adicionais: ${warningCount}. Consulte o JSON antes de restaurar.`;
+      if (window.orquestraDesktop) {
+        const saved = await window.orquestraDesktop.saveFile(filename, new Uint8Array(await blob.arrayBuffer()));
+        if (!saved) return;
+        notify(recoveryMessage);
+      } else {
+        download(blob, filename);
+        notify(`Download iniciado. ${recoveryMessage}`);
+      }
+    } catch (error) {
+      notify("Recuperação emergencial não gerada: " + (error as Error).message);
+    }
+  };
   useEffect(() => {
     const editingField = (target: EventTarget | null) =>
       target instanceof Element &&
       !!target.closest(
-        'input,textarea,select,[contenteditable="true"],[data-media-control]',
+        'input,textarea,select,[contenteditable="true"],[data-media-control],dialog',
       );
     const copy = (e: ClipboardEvent) => {
       if (
@@ -2190,14 +2353,26 @@ function App({ initial }: { initial: Library }) {
           "#ee9b91": "#aa4e42",
       }[c] || c
       : c;
+
   const connectionArrow = connectionEdit ? scene.items.find((item) => item.id === connectionEdit.arrowId) : undefined;
   const connectionOther = connectionEdit?.endpoint === "from" ? connectionArrow?.to : connectionArrow?.from;
-  const connectionPortTargets = connectionEdit
+  const connectionPortTargets = useMemo(() => connectionEdit
     ? getConnectionPortTargets(scene.items, [connectionEdit.arrowId, ...(connectionOther ? [connectionOther] : [])])
-    : [];
-  const connectionPortItemIds = new Set(connectionPortTargets.map((entry) => entry.item.id));
+    : [], [connectionEdit, connectionOther, scene.items]);
+  const connectionPortItemIds = useMemo(() => new Set(connectionPortTargets.map((entry) => entry.item.id)), [connectionPortTargets]);
+  const visibleItemIds = useMemo(() => {
+    const visibleWindow = canvasRef.current
+      ? renderWindowBounds(view, canvasRef.current.clientWidth, canvasRef.current.clientHeight)
+      : { x: -Infinity, y: -Infinity, w: Infinity, h: Infinity };
+    const next = visibleRenderItemIds(scene.items, visibleWindow, selected, exportAllItems || !canvasRef.current, 150);
+    const previous = visibleItemIdsRef.current;
+    if (previous.size === next.size && [...next].every((id) => previous.has(id))) return previous;
+    visibleItemIdsRef.current = next;
+    return next;
+  }, [scene.items, view.x, view.y, view.z, selected, exportAllItems]);
   const renderItem = (i: Item) => {
     if (i.hidden || (i.type === "arrow" && scene.items.some((target) => target.hidden && (target.id === i.from || target.id === i.to)))) return null;
+    if (!visibleItemIds.has(i.id)) return null;
     const path = i.type === "arrow" ? arrowGeometry(i, scene.items).path : "";
     const bounds = itemBounds(i, scene.items);
     const c = mappedColor(i.color),
@@ -2233,7 +2408,9 @@ function App({ initial }: { initial: Library }) {
         onPointerEnter={() => { if (!present) setHoveredConnectorItem(i.id); }}
         onPointerLeave={() => setHoveredConnectorItem((current) => current === i.id ? null : current)}
       >
-        {i.type === "icon" ? (
+        {audienceOpen && ["video", "audio", "link"].includes(i.type) ? (
+          <rect x={i.x} y={i.y} width={i.w} height={i.h} rx={8} fill="var(--surface)" stroke="var(--line)" strokeWidth={2 / view.z} pointerEvents="none" />
+        ) : i.type === "icon" ? (
           <>
             <rect
               x={i.x}
@@ -2259,13 +2436,18 @@ function App({ initial }: { initial: Library }) {
             active={(present && !hidden) || interactId === i.id}
             color={c}
             selected={selected.includes(i.id)}
-            youtubeActive={youtubePlaybackId === i.id}
+            youtubeActive={youtubePlaybackIds.includes(i.id)}
             onStartYoutube={() => {
               setSelected([i.id]);
               setSelectedHeading(null);
               setConnectionEdit(null);
               setConnectorPreview(null);
-              setYoutubePlaybackId(i.id);
+              startYoutube(i.id);
+            }}
+            onPdfPageChange={(page) => {
+              if (i.locked) return;
+              checkpoint();
+              updateScene((current) => ({ ...current, items: current.items.map((item) => item.id === i.id ? { ...item, pdfPage: page } : item) }));
             }}
             onOpenPdf={(assetId) => setPdfPreview({ assetId, name: i.assetName || "Documento PDF" })}
             onOpenLink={() => setLinkPreview({ url: i.url || "", title: i.text })}
@@ -2395,13 +2577,13 @@ function App({ initial }: { initial: Library }) {
                   y={i.y - frameTitleHeight(i)}
                   width={Math.max(0, i.w - 16)}
                   height={frameTitleHeight(i)}
-                  fill="var(--bg)"
+                  fill="transparent"
                   pointerEvents="all"
                 />
                 <text
                   x={i.x + 14}
                   y={i.y - frameTitleHeight(i) + i.size + 3}
-                  fill={mappedColor(itemTextColor(i))}
+                  fill={resolveItemTextColor({ ...i, fill: "transparent" }, light)}
                   fontFamily={fontStacks[i.fontFamily || "DM Sans"]}
                   fontSize={i.size}
                   fontWeight={i.bold ? 700 : 500}
@@ -2428,7 +2610,7 @@ function App({ initial }: { initial: Library }) {
                     : i.y + i.h / 2 - (lines.length - 1) * rowSpacing * 0.5 + 8
               }
               textAnchor={textAnchor}
-              fill={mappedColor(itemTextColor(i))}
+              fill={resolveItemTextColor(i, light)}
               fontFamily={fontStacks[i.fontFamily || "Caveat"]}
               fontSize={i.size}
               fontWeight={i.bold ? 700 : 500}
@@ -2467,8 +2649,8 @@ function App({ initial }: { initial: Library }) {
               <rect
                 data-resize="true"
                 data-item={i.id}
-                x={i.x + i.w + (youtubePlaybackId === i.id ? 5 / view.z : -4)}
-                y={i.y + i.h + (youtubePlaybackId === i.id ? 5 / view.z : -4)}
+                x={i.x + i.w + (youtubePlaybackIds.includes(i.id) ? 5 / view.z : -4)}
+                y={i.y + i.h + (youtubePlaybackIds.includes(i.id) ? 5 / view.z : -4)}
                 width={8 / view.z}
                 height={8 / view.z}
                 fill={light ? "#1672ce" : "#79baff"}
@@ -2532,6 +2714,11 @@ function App({ initial }: { initial: Library }) {
       </g>
     );
   };
+  const renderedItems = useMemo(() => scene.items.map(renderItem), [
+    scene.items, scene.id, visibleItemIds, selected, present, previewMotion, step,
+    view.z, light, interactId, tool, hoveredConnectorItem, connectionPortItemIds,
+    connectionEdit, connectorPreview, youtubePlaybackIds, audienceOpen,
+  ]);
   const editableSelected = editableSelection(scene.items, selected);
   const selectedBounds = selectionBounds(scene.items, selected);
   const multipleTransformable = canTransformSelection(scene.items, selected);
@@ -2565,7 +2752,7 @@ function App({ initial }: { initial: Library }) {
       if (current?.url !== normalized) {
         checkpoint();
         updateScene((s) => ({ ...s, items: s.items.map((item) => item.id === itemId ? { ...item, url: normalized } : item) }));
-        setYoutubePlaybackId(null);
+        stopYoutube(itemId);
       }
       return true;
     } catch (error) {
@@ -2595,7 +2782,7 @@ function App({ initial }: { initial: Library }) {
   })();
   return (
     <div
-      className={`app ${light ? "light" : ""} accent-${accent} ${present ? "presenting" : ""}`}
+      className={`app ${window.orquestraDesktop ? "desktop" : ""} ${light ? "light" : ""} accent-${accent} ${present ? "presenting" : ""} ${present && presenterMinimized ? "presenter-minimized" : ""} ${audienceOpen ? "audience-open" : ""}`}
     >
       {insertTab && (
         <InsertPanel
@@ -2630,6 +2817,12 @@ function App({ initial }: { initial: Library }) {
           onCreate={(name) => createProjectVersion(versionProjectId, name)}
           onRestore={restoreProjectVersion}
         />
+      )}
+      {templatePickerOpen && (
+        <SectionTemplateDialog templates={templates} customIds={(library.templates || []).map((template) => template.id)} light={light}
+          onClose={() => setTemplatePickerOpen(false)}
+          onCreate={(template) => { if (template) insertTemplate(template); else addScene(); }}
+          onDelete={(template) => { setTemplatePickerOpen(false); deleteSceneTemplate(template); }} />
       )}
       {nameDialog && (
         <NameDialog
@@ -2775,6 +2968,10 @@ function App({ initial }: { initial: Library }) {
                   <Download />
                   Backup da biblioteca
                 </button>
+                <button onClick={() => void recoveryExport()}>
+                  <Download />
+                  Recuperação emergencial da memória
+                </button>
                 <hr />
                 <button
                   onClick={() => {
@@ -2882,7 +3079,8 @@ function App({ initial }: { initial: Library }) {
                     setEditingSceneField(field);
                   }}
                 />
-                {scene.items.map(renderItem)}
+                <MemoizedSceneItems items={renderedItems} />
+                {present && <LaserTrail ref={laserTrail} width={12 / view.z} helper />}
                 {connectorPreviewModel && (
                   <g data-connector-preview="true" pointerEvents="none">
                     <ArrowVisual item={connectorPreviewModel.item} path={connectorPreviewModel.path} color={mappedColor(connectorPreviewModel.item.color)} animated={false} />
@@ -2980,10 +3178,10 @@ function App({ initial }: { initial: Library }) {
             <YouTubeBoardControls
               item={selectedYoutubeItem}
               style={youtubeToolbarStyle}
-              active={youtubePlaybackId === selectedYoutubeItem.id}
+              active={youtubePlaybackIds.includes(selectedYoutubeItem.id)}
               onCommitUrl={(value) => commitYoutubeUrl(selectedYoutubeItem.id, value)}
               onOpen={() => { void openLink(selectedYoutubeItem.url || "").catch((error) => notify((error as Error).message)); }}
-              onToggle={() => setYoutubePlaybackId((current) => current === selectedYoutubeItem.id ? null : selectedYoutubeItem.id)}
+              onToggle={() => youtubePlaybackIds.includes(selectedYoutubeItem.id) ? stopYoutube(selectedYoutubeItem.id) : startYoutube(selectedYoutubeItem.id)}
             />
           )}
           {editingSceneField && (
@@ -3053,7 +3251,7 @@ function App({ initial }: { initial: Library }) {
                     width: Math.max(160, i.w * view.z),
                     height: Math.max(85, i.h * view.z),
                     fontSize: i.size * view.z,
-                    color: mappedColor(itemTextColor(i)),
+                    color: resolveItemTextColor(i.type === "frame" ? { ...i, fill: "transparent" } : i, light),
                     fontFamily: fontStacks[i.fontFamily || "Caveat"],
                     fontWeight: i.bold ? 700 : 500,
                     fontStyle: i.italic ? "italic" : "normal",
@@ -3169,7 +3367,7 @@ function App({ initial }: { initial: Library }) {
               title="Seção anterior"
               disabled={index === 0 && !present}
               onClick={() =>
-                present && step > 0 ? setStep((s) => s - 1) : go(index - 1)
+                present ? previousPresentation() : go(index - 1)
               }
             >
               <ChevronLeft size={18} />
@@ -3220,8 +3418,7 @@ function App({ initial }: { initial: Library }) {
               <button
                 className="exit-present"
                 onClick={() => {
-                  setPresent(false);
-                  setPlaying(false);
+                  stopPresentation();
                 }}
               >
                 <X size={16} />
@@ -3308,58 +3505,32 @@ function App({ initial }: { initial: Library }) {
             {tab === "sections" ? (
               <>
                 <div className="section-intro">
-                  <span>SUA HISTÓRIA, EM PARTES</span>
-                  <span className="tiny-dot" />
+                  <span>ORDEM DA APRESENTAÇÃO</span>
+                  <span>{String(index + 1).padStart(2, "0")} / {String(board.scenes.length).padStart(2, "0")}</span>
                 </div>
-                <p className="section-edit-hint">
-                  Duplo clique no nome, título ou subtítulo do canvas para
-                  editar.
-                </p>
-                <div className="section-list">
+                <div ref={sectionListRef} className="section-list" role="navigation" aria-label="Seções do quadro">
                   {board.scenes.map((s, n) => (
                     <button
                       key={s.id}
                       className={`section-row ${s.id === scene.id ? "active" : ""}`}
+                      aria-current={s.id === scene.id ? "step" : undefined}
                       onClick={() => go(n)}
                     >
                       <span className="section-number">
                         {String(n + 1).padStart(2, "0")}
                       </span>
                       <span className="section-name">{s.name}</span>
-                      <GripVertical size={14} />
+                      <ChevronRight size={13} />
                     </button>
                   ))}
                 </div>
-                <button className="new-section" onClick={addScene}>
+                <button className="new-section" onClick={() => setTemplatePickerOpen(true)} disabled={board.scenes.length >= 200}>
                   <Plus size={17} />
                   Nova seção
                 </button>
-                <div className="section-templates">
-                  <div className="panel-subheading">Modelos de seção</div>
-                  <select
-                    aria-label="Modelo de seção"
-                    value={templateChoice}
-                    onChange={(event) => setTemplateChoice(event.target.value)}
-                  >
-                    <option value="">Escolha um modelo</option>
-                    {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                  </select>
-                  <div className="template-actions">
-                    <button disabled={!templateChoice} onClick={() => {
-                      const template = templates.find((entry) => entry.id === templateChoice);
-                      if (template) insertTemplate(template);
-                    }}>Inserir cópia</button>
-                    <button onClick={() => setNameDialog({ kind: "template", value: scene.name || "Minha seção" })}>Salvar seção atual</button>
-                  </div>
-                  {templates.some((template) => template.id === templateChoice && library.templates?.some((saved) => saved.id === template.id)) && (
-                    <button className="template-delete" onClick={() => {
-                      const template = library.templates?.find((entry) => entry.id === templateChoice);
-                      if (template) deleteSceneTemplate(template);
-                    }}>Excluir modelo personalizado</button>
-                  )}
-                  <p className="field-help">Inserir cria uma nova seção. Modelos personalizados e suas referências de mídia acompanham o backup da biblioteca.</p>
-                </div>
                 <div className="section-settings">
+                  <div className="section-settings-heading"><strong>Seção atual</strong><button className="save-section-template icon-button" aria-label="Salvar seção como modelo" title="Salvar seção como modelo" onClick={() => setNameDialog({ kind: "template", value: scene.name || "Minha seção" })}><Save size={14} /></button></div>
+                  <p className="section-edit-hint">Edite aqui ou com duplo clique no canvas.</p>
                   <label>
                     Nome da seção
                     <input
@@ -3399,6 +3570,11 @@ function App({ initial }: { initial: Library }) {
                       }
                     />
                   </label>
+                  <label className="presenter-notes-editor">
+                    Notas privadas do apresentador <span>{((scene as Scene & {presenterNotes?:string}).presenterNotes || "").length}/20000</span>
+                    <textarea aria-label="Notas privadas do apresentador" maxLength={20000} value={(scene as Scene & {presenterNotes?:string}).presenterNotes || ""} onFocus={checkpoint} onChange={(e) => updateScene((s) => ({ ...s, presenterNotes: e.target.value } as Scene))} placeholder="Visíveis somente no console privado ao apresentar em duas telas." />
+                  </label>
+                  <details className="section-advanced"><summary>Layout dos títulos <ChevronDown size={13} /></summary>
                   <section className="section-heading-layout" aria-label="Layout dos títulos da seção">
                     <div className="panel-subheading">Layout no canvas</div>
                     <label>
@@ -3440,6 +3616,7 @@ function App({ initial }: { initial: Library }) {
                     </div>
                     <p className="field-help">Arraste o texto no canvas para mover. A alça no canto ajusta largura e fonte. Os valores antigos continuam iguais até você alterar o layout.</p>
                   </section>
+                  </details>
                   <div className="section-settings-row">
                     <span>Ordem da seção</span>
                     <button
@@ -3461,15 +3638,8 @@ function App({ initial }: { initial: Library }) {
                     </button>
                   </div>
                 </div>
-                <div className="aside-bottom">
-                  <div className="small-orbit">
-                    <Workflow size={19} />
-                  </div>
-                  <strong>Ideias ganham movimento.</strong>
-                  <p>Organize. Conecte. Apresente.</p>
-                  <button onClick={() => setHelp(true)}>
-                    Conheça os atalhos <ArrowUpRight size={13} />
-                  </button>
+                <div className="aside-bottom section-sidebar-footer">
+                  <button onClick={() => setHelp(true)}><Keyboard size={14} /> Atalhos do teclado <kbd>?</kbd></button>
                 </div>
               </>
             ) : tab === "layers" ? (
@@ -3577,7 +3747,7 @@ function App({ initial }: { initial: Library }) {
                   <Settings2 size={15} />
                   {sel ? "Elemento selecionado" : "Ferramenta de desenho"}
                 </div>
-                <section className="arrange-tools" aria-label="Alinhar, distribuir e agrupar">
+                {selected.length > 0 && <section className="arrange-tools" aria-label="Alinhar, distribuir e agrupar">
                   <div className="panel-subheading">Organizar seleção</div>
                   <div className="arrange-grid">
                     {([
@@ -3595,7 +3765,7 @@ function App({ initial }: { initial: Library }) {
                     <button disabled={editableSelected.length < 2} onClick={() => toggleGroup(false)}>Agrupar · Ctrl+G</button>
                     <button disabled={!selected.some((id) => scene.items.find((item) => item.id === id)?.groupId)} onClick={() => toggleGroup(true)}>Desagrupar · Ctrl+Shift+G</button>
                   </div>
-                </section>
+                </section>}
                 <label>Cor da borda</label>
                 <div className="swatches">
                   {colors.map((c) => (
@@ -4062,11 +4232,9 @@ function App({ initial }: { initial: Library }) {
         />
       )}
       {help && (
-        <div className="modal-backdrop" onClick={() => setHelp(false)}>
+        <ModalDialog label="Atalhos e dicas" onClose={() => setHelp(false)}>
           <div
             className="modal"
-            role="dialog"
-            aria-label="Atalhos e dicas"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -4123,8 +4291,9 @@ function App({ initial }: { initial: Library }) {
               </p>
             </div>
           </div>
-        </div>
+        </ModalDialog>
       )}
+      {present && <PresenterPanel scenes={board.scenes} index={index} step={step} maxStep={maxStep} playing={playing} audience={audienceOpen} fullscreen={presenterFullscreen} laser={laserEnabled} onSelect={go} onPrevious={previousPresentation} onNext={advance} onPlay={() => setPlaying(value => !value)} onStop={stopPresentation} onOpenAudience={() => void openAudience()} onCloseAudience={() => { void window.orquestraPresenter?.closeAudience().then(() => setAudienceOpen(false)).catch(() => notify("Não foi possível fechar a tela do público.")); }} onFullscreen={() => void togglePresenterFullscreen()} onLaser={() => { clearLaser(); setLaserEnabled(value => !value); }} minimized={presenterMinimized} onMinimize={() => setPresenterMinimized(true)} onRestore={() => setPresenterMinimized(false)} notes={(scene as Scene & {presenterNotes?:string}).presenterNotes} />}
       {mediaBusy && (
         <div className="media-import-status" role="status">
           <Upload size={16} />
@@ -4148,7 +4317,9 @@ function App({ initial }: { initial: Library }) {
   );
 }
 const root = document.getElementById("root")!;
-readLibrary()
+if (window.orquestraPresenter?.isAudience) {
+  createRoot(root).render(<React.StrictMode><AudienceView /></React.StrictMode>);
+} else readLibrary()
   .then((initial) =>
     createRoot(root).render(
       <React.StrictMode>

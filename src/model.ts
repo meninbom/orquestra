@@ -68,6 +68,7 @@ export type Item = {
   assetName?: string;
   assetMime?: string;
   url?: string;
+  pdfPage?: number;
   mediaFit?: "contain" | "cover";
   mediaLoop?: boolean;
   mediaAutoplay?: boolean;
@@ -98,6 +99,8 @@ export type Scene = {
   subtitle?: string;
   /** Optional canvas layout for semantic section headings; absent keeps the v1.5 layout. */
   headingLayout?: Partial<Record<SceneHeadingField, SceneHeadingFieldLayout>>;
+  /** Private presenter notes for this section; never rendered in static exports. */
+  presenterNotes?: string;
   items: Item[];
   duration: number;
   transition?: Transition;
@@ -368,6 +371,8 @@ export function validBoard(d: unknown): d is Board {
         typeof s.name === "string" &&
         typeof s.description === "string" &&
         (s.subtitle === undefined || typeof s.subtitle === "string") &&
+        (s.presenterNotes === undefined ||
+          (typeof s.presenterNotes === "string" && s.presenterNotes.length <= 20000)) &&
         (s.headingLayout === undefined ||
           (!!s.headingLayout &&
             typeof s.headingLayout === "object" &&
@@ -456,6 +461,7 @@ export function validBoard(d: unknown): d is Board {
                 typeof i.assetMime === "string")) &&
             (i.type !== "link" ||
               (typeof i.url === "string" && validHttps(i.url))) &&
+            (i.pdfPage === undefined || (i.type === "file" && Number.isInteger(i.pdfPage) && i.pdfPage >= 1 && i.pdfPage <= 100000)) &&
             (i.mediaFit === undefined ||
               ["contain", "cover"].includes(i.mediaFit)) &&
             [i.mediaLoop, i.mediaAutoplay, i.mediaMuted].every(

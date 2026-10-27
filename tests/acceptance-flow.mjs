@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { inflateSync } from "node:zlib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
-function makeAcceptancePdf() {
+export function makeAcceptancePdf() {
   const streams = [
     "q 0.89 0.95 0.91 rg 58 555 496 174 re f Q\n0.17 0.49 0.33 RG 3 w 58 555 496 174 re S\nBT /F1 27 Tf 78 680 Td (Página 1 - ação, conexão e São Paulo) Tj ET\nBT /F1 15 Tf 78 625 Td (PDF local para validar o leitor offline.) Tj ET\n0.17 0.49 0.33 RG 7 w 78 585 m 510 585 l S\n",
     "q 0.91 0.92 0.99 rg 58 535 496 194 re f Q\n0.35 0.36 0.67 RG 3 w 58 535 496 194 re S\nBT /F1 27 Tf 78 680 Td (Página 2 - revisão e conteúdo) Tj ET\nBT /F1 15 Tf 78 625 Td (Acentos: revisão, órgão, útil.) Tj ET\n0.35 0.36 0.67 RG 6 w 78 585 m 510 585 l S\n",
@@ -195,6 +195,8 @@ export async function testPdfConnectionsFrames({ cdp, run, waitFor, profile }) {
   const fixture = makeAcceptancePdf();
   await writeFile(download, fixture);
   await click(".new-section");
+  await waitFor(() => run('!!document.querySelector(".section-template-dialog[open]")'), "choose a new section model");
+  await click(".template-create-button");
   await waitFor(async () => (await scene()).items.length === 0, "new empty section for acceptance flow");
   await click('button[title="Restaurar zoom 100%"]');
   const canvas = await run(`(()=>{const r=document.querySelector('.canvas').getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()`);

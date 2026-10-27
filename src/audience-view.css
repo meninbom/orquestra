@@ -1,0 +1,34 @@
+.audience{position:fixed;inset:0;background:#000;color:#eef2ee;display:flex;flex-direction:column;overflow:hidden;font:14px "DM Sans",sans-serif}
+.audience.light{background:#f4f7f3;color:#18201c;color-scheme:light;--bg:#f4f7f3;--surface:#fff;--line:#d6dfd7;--muted:#64796b;--text:#273f35;--mint:#237f55;--active:#dceee0;--hover:#e5eee5}
+.audience.waiting{align-items:center;justify-content:center}
+.audience-board{flex:1;min-height:0;display:grid;place-items:center;padding:2vh 3vw;position:relative}
+.audience-scene{position:relative;width:100%;height:100%;min-width:0;min-height:0}
+.audience-scene>.audience-artwork,.audience-scene>.audience-media-layer{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.audience-artwork svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.audience-scene>.audience-artwork{z-index:0}
+.audience-scene>.audience-media-layer{z-index:1;pointer-events:none}
+.audience-media-layer [data-media-control],.audience-media-layer foreignObject{pointer-events:auto}
+.audience footer{height:34px;display:flex;justify-content:space-between;align-items:center;padding:0 18px;opacity:.7}
+.audience-artwork [data-item],.audience-media-layer [data-audience-media]{transform-box:fill-box;transform-origin:center}
+.audience .youtube-board-player{width:100%;height:100%;border:0}
+.audience .board-media{pointer-events:auto}
+.audience .board-pdf-toolbar{opacity:.92}
+@keyframes audience-item-fade{from{opacity:0}to{opacity:1}}
+@keyframes audience-item-draw{from{opacity:0;clip-path:inset(0 100% 0 0)}to{opacity:1;clip-path:inset(0)}}
+@keyframes audience-item-slide-up{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
+@keyframes audience-item-slide-left{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:none}}
+@keyframes audience-item-zoom{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
+@keyframes audience-item-bounce{0%{opacity:0;transform:scale(.6)}65%{opacity:1;transform:scale(1.08)}100%{transform:scale(1)}}
+@keyframes audience-item-blur{from{opacity:0;filter:blur(12px)}to{opacity:1;filter:blur(0)}}
+@keyframes audience-item-flip{from{opacity:0;transform:rotateY(80deg)}to{opacity:1;transform:rotateY(0)}}
+@keyframes audience-transition-cut{from{opacity:1}to{opacity:1}}
+@keyframes audience-transition-fade{from{opacity:0}to{opacity:1}}
+@keyframes audience-transition-slide{from{opacity:0;transform:translateX(5%)}to{opacity:1;transform:none}}
+@keyframes audience-transition-zoom{from{opacity:0;transform:scale(.88)}to{opacity:1;transform:scale(1)}}
+@keyframes audience-transition-blur{from{opacity:0;filter:blur(12px)}to{opacity:1;filter:blur(0)}}
+@keyframes audience-transition-flip{from{opacity:0;transform:rotateY(20deg)}to{opacity:1;transform:rotateY(0)}}
+
+/* The public window only offers controls it can perform without editor privileges. */
+.audience .board-pdf-toolbar button[aria-label^="Visualizar PDF"],
+.audience .board-pdf-toolbar button[aria-label^="Salvar PDF"],
+.audience .attachment-content button { display:none; }

@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import electron from "electron";
 
 const sourceMode = process.env.ORQUESTRA_TEST_SOURCE === "1";
+const mediaOnly = process.env.ORQUESTRA_TEST_MEDIA_CONTINUITY === "1";
 const linkOnly = process.env.ORQUESTRA_TEST_LINK_ONLY === "1";
 const pdfOnly = process.env.ORQUESTRA_TEST_PDF_ONLY === "1";
 const needsMainInspector = linkOnly || !pdfOnly;
@@ -151,7 +152,18 @@ try {
     };
     return mainWs;
   }
-  if (linkOnly) {
+  if (process.env.ORQUESTRA_TEST_PRESENTER === "1") {
+    await connectMainInspector();
+    const { testPresenterBridge } = await import("../tests/presenter-bridge-flow.mjs");
+    const evidence = await testPresenterBridge({ cdp, run, mainRun, waitFor, profile, cdpEvents });
+    await mkdir(".qa", { recursive: true });
+    await writeFile(".qa/presenter-flow.json", JSON.stringify({ passed: true, executable, evidence }, null, 2));
+    console.log(JSON.stringify({ passed: true, executable, presenter: evidence }, null, 2));
+  } else if (mediaOnly) {
+    const { testMediaContinuity } = await import("../tests/media-continuity-flow.mjs");
+    const evidence = await testMediaContinuity({ cdp, run, waitFor, profile, cdpEvents });
+    console.log(JSON.stringify({ passed: true, mediaContinuity: evidence }, null, 2));
+  } else if (linkOnly) {
     await connectMainInspector();
     const { testLinkPreview } = await import("../tests/link-preview-flow.mjs");
     const evidence = await testLinkPreview({
@@ -396,6 +408,8 @@ try {
     "Ícones, imagens, vídeo e áudio.",
   );
   await run('document.querySelector(".new-section").click()');
+  await waitFor(() => run('!!document.querySelector(".section-template-dialog[open]")'), "new section template dialog");
+  await run('document.querySelector(".template-create-button").click()');
   await delay(60);
   await run('document.querySelector(".scene-controls button").click()');
   await delay(60);

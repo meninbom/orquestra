@@ -197,6 +197,19 @@ test("listener leaves requests unchanged if the main window is gone", () => {
   assert.deepEqual(response.requestHeaders, details.requestHeaders);
 });
 
+test("permite somente o iframe direto de player da janela de audiência registrada", () => {
+  const audience = { id: 84, mainFrame: { processId: 90, routingId: 1 } };
+  const playerFrame = { processId: 91, routingId: 2, parent: audience.mainFrame };
+  const audienceRequest = request({ webContentsId: audience.id, frame: playerFrame });
+  assert.equal(shouldAddYoutubePreviewReferer(audienceRequest, [mainWebContents, audience]), true);
+  const listener = createYoutubePreviewRefererListener(() => [{ webContents: mainWebContents }, { webContents: audience }]);
+  let result;
+  listener(audienceRequest, (value) => { result = value; });
+  assert.equal(result.requestHeaders.Referer, APP_REFERER, "registered audience player receives the narrow app Referer");
+  assert.equal(shouldAddYoutubePreviewReferer({ ...audienceRequest, frame: { ...playerFrame, parent: mainFrame } }, [mainWebContents, audience]), false);
+  assert.equal(shouldAddYoutubePreviewReferer({ ...audienceRequest, webContentsId: 999 }, [mainWebContents, audience]), false);
+});
+
 test("installer rejects incomplete inputs without registering", () => {
   assert.throws(() => installYoutubePreviewReferer(null, () => null), TypeError);
   assert.throws(() => installYoutubePreviewReferer({ webRequest: {} }, () => null), TypeError);

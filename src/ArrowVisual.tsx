@@ -4,11 +4,13 @@ export function ArrowVisual({
   path,
   color,
   animated,
+  markerId,
 }: {
   item: Item;
   path: string;
   color: string;
   animated: boolean;
+  markerId?: string;
 }) {
   const motion = animated ? item.arrowMotion || "flow" : "none";
   const dash =
@@ -30,7 +32,7 @@ export function ArrowVisual({
         stroke={color}
         strokeWidth={2}
         strokeLinecap="round"
-        markerEnd={`url(#arrow-${item.color.replace("#", "")})`}
+        markerEnd={`url(#${markerId ?? `arrow-${item.color.replace("#", "")}`})`}
         pathLength={motion === "draw" ? 1 : undefined}
         strokeDasharray={dash}
         className={`arrow-line arrow-motion-${motion}`}

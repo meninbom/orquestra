@@ -134,6 +134,10 @@ export function validLibrary(value: unknown): value is Library {
   }
 }
 
+export function validateLibraryImport(library: Library, incoming: Library | Board): Library {
+  return importProjects(library, incoming);
+}
+
 export function validSavedStyle(value: unknown): value is SavedStyle {
   const style = value as SavedStyle;
   return !!style && typeof style.id === "string" &&
@@ -219,14 +223,25 @@ export function importProjects(
     : validBoard(incoming)
       ? [{ board: incoming }]
       : [];
+  if (!sourceProjects.length && (incoming as Library)?.format === "orquestra-library") {
+    const raw = incoming as Library;
+    if (Array.isArray(raw.projects) && raw.projects.some((project) => (project?.styles?.length || 0) > 200))
+      throw new Error("A importação contém um projeto com mais de 200 estilos.");
+    if ((library.templates?.length || 0) + (raw.templates?.length || 0) > 200)
+      throw new Error("A importação excede o limite de 200 modelos da biblioteca.");
+  }
   if (!sourceProjects.length)
     throw new Error("Arquivo de projeto ou biblioteca inválido.");
+  if ((library.templates?.length || 0) + (validLibrary(incoming) ? incoming.templates?.length || 0 : 0) > 200)
+    throw new Error("A importação excede o limite de 200 modelos da biblioteca.");
+  if (sourceProjects.some((project) => (project.styles?.length || 0) > 200))
+    throw new Error("A importação contém um projeto com mais de 200 estilos.");
   const projects = sourceProjects.map(({ board, styles }) => ({
     ...makeProject(board.title),
     board: cloneBoard(board),
     ...(styles?.length ? { styles: styles.map((style) => ({ ...copy(style), id: uid() })) } : {}),
   }));
-  return {
+  const result: Library = {
     ...library,
     activeId: projects[0].id,
     projects: [...library.projects, ...projects],
@@ -243,4 +258,7 @@ export function importProjects(
         }
       : {}),
   };
+  if (!validLibrary(result))
+    throw new Error("A importação excede os limites permitidos da biblioteca.");
+  return result;
 }

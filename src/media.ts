@@ -165,13 +165,13 @@ export async function storeFile(file: File): Promise<AssetMeta> {
   const { blob: _, ...meta } = asset;
   return meta;
 }
-export const blobData = (blob: Blob): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
+export const blobData = async (blob: Blob): Promise<string> => {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  return `data:${blob.type || "application/octet-stream"};base64,${btoa(binary)}`;
+};
 export async function mediaDimensions(
   asset: AssetMeta,
 ): Promise<{ w: number; h: number }> {
@@ -216,6 +216,18 @@ export async function mediaDimensions(
         v.load();
       }
     }
+    if (asset.mime === "application/pdf" || asset.name.toLowerCase().endsWith(".pdf")) {
+      const { createPdfDocumentTask } = await import("./pdfPreview");
+      const task = createPdfDocumentTask(new Uint8Array(await blob.arrayBuffer()));
+      task.onPassword = () => { void task.destroy().catch(() => {}); };
+      try {
+        const pdf = await task.promise;
+        const page = await pdf.getPage(1);
+        const bounds = page.getViewport({ scale: 1 });
+        return { w: 420, h: Math.max(160, Math.min(840, 420 * bounds.height / bounds.width)) };
+      } catch { return { w: 420, h: 594 }; }
+      finally { await task.destroy().catch(() => {}); }
+    }
     return asset.mime.startsWith("audio/")
       ? { w: 400, h: 100 }
       : { w: 340, h: 130 };
@@ -223,41 +235,83 @@ export async function mediaDimensions(
     URL.revokeObjectURL(url);
   }
 }
-const referenced = (boards: Board[]) => [
-  ...new Set(
-    boards.flatMap((b) =>
-      b.scenes.flatMap((s) =>
-        s.items.map((i) => i.assetId).filter((x): x is string => !!x),
-      ),
-    ),
-  ),
-];
-export async function portablePayload(value: Library | Board) {
-  const boards = validLibrary(value)
-    ? value.projects.map((p) => p.board)
-    : [value as Board];
+export type MissingAsset = { id: string; name?: string; reason: string };
+
+export function collectAssetReferences(value: unknown): Array<{ id: string; name?: string }> {
+  const found = new Map<string, { id: string; name?: string }>();
+  const addBoard = (board: unknown) => {
+    if (!board || typeof board !== "object") return;
+    const scenes = (board as { scenes?: unknown }).scenes;
+    if (!Array.isArray(scenes)) return;
+    for (const scene of scenes) {
+      if (!scene || typeof scene !== "object") continue;
+      const items = (scene as { items?: unknown }).items;
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const id = (item as { assetId?: unknown }).assetId;
+        if (typeof id !== "string" || !id) continue;
+        const name = (item as { assetName?: unknown; name?: unknown }).assetName ?? (item as { name?: unknown }).name;
+        if (!found.has(id)) found.set(id, { id, ...(typeof name === "string" ? { name } : {}) });
+      }
+    }
+  };
+  if (value && typeof value === "object") {
+    const candidate = value as { format?: unknown; projects?: unknown; templates?: unknown };
+    if (candidate.format === "orquestra-library") {
+      if (Array.isArray(candidate.projects)) for (const project of candidate.projects)
+        if (project && typeof project === "object") addBoard((project as { board?: unknown }).board);
+      if (Array.isArray(candidate.templates)) for (const template of candidate.templates)
+        if (template && typeof template === "object") addBoard({ scenes: [(template as { scene?: unknown }).scene] });
+    } else addBoard(value);
+  }
+  return [...found.values()];
+}
+
+function serializableEmergencyLibrary(value: unknown): { library: unknown; warnings: string[] } {
+  const warnings: string[] = [];
+  const seen = new WeakSet<object>();
+  const library = JSON.parse(JSON.stringify(value, (_key, entry) => {
+    if (typeof entry === "bigint") { warnings.push("Um valor BigInt foi convertido para texto."); return String(entry); }
+    if (entry && typeof entry === "object") {
+      if (seen.has(entry)) { warnings.push("Uma referência circular foi omitida do estado recuperado."); return null; }
+      seen.add(entry);
+    }
+    return entry;
+  }));
+  return { library, warnings: [...new Set(warnings)] };
+}
+export async function portablePayload(value: Library | Board, options: { emergency?: boolean } = {}) {
+  const isLibrary = (value as unknown as Library)?.format === "orquestra-library";
+  if (!validLibrary(value) && !(options.emergency && isLibrary) && !validBoard(value))
+    throw new Error("O conteúdo não é uma biblioteca ou projeto válido para backup normal.");
+  const emergency = options.emergency === true && isLibrary;
+  const references = collectAssetReferences(value);
   const assets: PackedAsset[] = [];
+  const missingAssets: MissingAsset[] = [];
   let bytes = 0;
-  const ids = new Set(referenced(boards));
-  if (validLibrary(value))
-    for (const template of value.templates || [])
-      for (const item of template.scene.items)
-        if (item.assetId) ids.add(item.assetId);
-  for (const id of ids) {
-    const asset = await getAsset(id);
-    bytes += asset.size;
-    if (bytes > MAX_BACKUP)
-      throw new Error(
-        "Backup com mais de 200 MB de mídia. Exporte projetos separadamente.",
-      );
-    const data = (await blobData(asset.blob)).split(",")[1];
-    assets.push({
-      id: asset.id,
-      name: asset.name,
-      mime: asset.mime,
-      size: asset.size,
-      data,
-    });
+  for (const reference of references) {
+    try {
+      const asset = await getAsset(reference.id);
+      if (bytes + asset.size > MAX_BACKUP && !emergency)
+        throw new Error("Backup com mais de 200 MB de mídia. Exporte projetos separadamente.");
+      const data = (await blobData(asset.blob)).split(",")[1];
+      bytes += asset.size;
+      assets.push({ id: asset.id, name: asset.name, mime: asset.mime, size: asset.size, data });
+    } catch (error) {
+      if (!emergency) {
+        if (error instanceof Error && error.message.startsWith("Backup com mais de 200 MB")) throw error;
+        throw new Error(`Não foi possível incluir a mídia “${reference.name || reference.id}” (${reference.id}) no backup. Verifique se o arquivo está disponível e tente novamente.`);
+      }
+      missingAssets.push({ id: reference.id, ...(reference.name ? { name: reference.name } : {}), reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (emergency) {
+    const snapshot = serializableEmergencyLibrary(value);
+    return { format: "orquestra-emergency-recovery", version: 1,
+      warning: "Recuperação emergencial parcial; este pacote não pode ser importado como backup normal.",
+      warnings: [...snapshot.warnings, ...(missingAssets.length ? [`${missingAssets.length} mídia(s) indisponível(is); consulte missingAssets.`] : [])],
+      missingAssets, library: snapshot.library, assets };
   }
   return validLibrary(value)
     ? { ...value, assets }
@@ -320,7 +374,7 @@ export async function importPayload(
     ...boards.flatMap((board) => board.scenes),
     ...(validLibrary(cloned) ? (cloned.templates || []).map((template) => template.scene) : []),
   ];
-  const allAssetIds = new Set(referenced(boards));
+  const allAssetIds = new Set(collectAssetReferences(cloned).map((asset) => asset.id));
   for (const scene of allScenes) for (const item of scene.items) if (item.assetId) allAssetIds.add(item.assetId);
   for (const id of allAssetIds)
     if (!remapped.has(id)) {
@@ -329,8 +383,12 @@ export async function importPayload(
   for (const scene of allScenes)
     for (const item of scene.items)
       if (item.assetId && remapped.has(item.assetId)) item.assetId = remapped.get(item.assetId);
+  // importProjects clones boards and templates, so remap references before it
+  // builds the returned library. Keep all validation and media reads ahead of
+  // the first write to the asset store.
+  const result = importProjects(library, cloned);
   for (const asset of prepared) await put(asset);
-  return importProjects(library, cloned);
+  return result;
 }
 export async function openLink(url: string) {
   const value = safeLink(url);

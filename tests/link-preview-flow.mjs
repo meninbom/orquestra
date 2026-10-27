@@ -138,6 +138,8 @@ export async function testLinkPreview({
     await click(".aside-tabs button:first-child");
   }
   await click(".new-section");
+  await waitFor(() => run('!!document.querySelector(".section-template-dialog[open]")'), "choose a new section model");
+  await click(".template-create-button");
   await waitFor(async () => (await scene()).items.length === 0, "empty section for link preview QA");
   const pageLink = await createLinkThroughUi(PREVIEW_URL, "Página HTTPS de teste");
   assert.ok(pageLink?.id);
@@ -387,9 +389,12 @@ export async function testLinkPreview({
   }
 
   let playback = null;
+  let playbackAfterDeselection = null;
+  let playbackState = "";
   let playbackError = null;
   if (youtubePlayback) {
-    const playbackState = `(async()=>{
+    await mainRun(`process.mainModule.require("electron").BrowserWindow.getAllWindows()[0].webContents.setAudioMuted(true)`);
+    playbackState = `(async()=>{
       const electronApi=globalThis.require?.('electron')||process.mainModule?.require?.('electron');
       const window=electronApi?.BrowserWindow?.getAllWindows?.().find(candidate=>candidate.webContents.getURL().endsWith('orquestra.html'));
       if(!window)return [];
@@ -424,18 +429,16 @@ export async function testLinkPreview({
     await writeFile(".qa/youtube-inline-playing.png", Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
   }
 
-  // Resize through the external frame handle. This pauses/unmounts the iframe
-  // before applying geometry, so the remote player never captures the gesture.
+  // Resizing and changing selection must retain the same live iframe.
+  await run('window.__continuingYoutubePlayer=document.querySelector("iframe.youtube-board-player");true');
   const youtubeBeforeResize = (await scene()).items.find((item) => item.id === youtubeLink.id);
   await mouse("mousePressed", activePlayerResize);
   await mouse("mouseMoved", { x: activePlayerResize.x + 20, y: activePlayerResize.y + 12 });
   await mouse("mouseReleased", { x: activePlayerResize.x + 20, y: activePlayerResize.y + 12 });
   await waitFor(async () => (await scene()).items.find((item) => item.id === youtubeLink.id)?.w > youtubeBeforeResize.w, "selected inline YouTube frame resizes from its external handle");
-  assert.equal(await run('!!document.querySelector("iframe.youtube-board-player")'), false, "resizing pauses and unmounts the active player");
+  assert.equal(await run('document.querySelector("iframe.youtube-board-player")===window.__continuingYoutubePlayer'), true, "resizing retains the active player");
   await writeFile(".qa/youtube-inline-resized.png", Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
 
-  await clickByPointer('.youtube-context-bar [aria-label="Reproduzir vídeo no canvas"]');
-  await waitFor(() => run('!!document.querySelector("iframe.youtube-board-player")'), "the inline player can be explicitly resumed after resize");
   await clickByPointer('.youtube-context-bar [aria-label="Sair do vídeo no canvas"]');
   await waitFor(() => run('!document.querySelector("iframe.youtube-board-player")'), "the external toolbar exit action pauses the inline player");
   await clickByPointer('.youtube-context-bar [aria-label="Reproduzir vídeo no canvas"]');
@@ -444,17 +447,23 @@ export async function testLinkPreview({
   const outsidePlayerPoint = { x: canvasBounds.x + 18, y: canvasBounds.y + canvasBounds.h - 18 };
   await mouse("mousePressed", outsidePlayerPoint);
   await mouse("mouseReleased", outsidePlayerPoint);
-  await waitFor(() => run('!document.querySelector("iframe.youtube-board-player")&&!document.querySelector(".youtube-context-bar")'), "clicking outside an active cross-origin player returns to editing");
+  await waitFor(() => run('!!document.querySelector("iframe.youtube-board-player")&&!document.querySelector(".youtube-context-bar")'), "clicking outside keeps playback while deselecting");
+  await run('window.__continuingYoutubePlayer=document.querySelector("iframe.youtube-board-player");true');
+  if (youtubePlayback) {
+    const before = await waitFor(async () => (await mainRun(playbackState)).find(state => state.readyState >= 2 && !state.paused), "YouTube plays after deselection", 25000);
+    await delay(1500);
+    const after = (await mainRun(playbackState)).find(state => !state.paused && state.currentTime > before.currentTime + 0.5);
+    assert.ok(after, "real YouTube time advances while the player is not selected");
+    playbackAfterDeselection = { before: before.currentTime, after: after.currentTime, paused: after.paused };
+  }
   const selectedMediaPoint = await run(`(()=>{const r=document.querySelector('[data-item="${youtubeLink.id}"] [data-youtube-item]').getBoundingClientRect();return{x:r.left+Math.min(90,r.width*.2),y:r.top+Math.min(20,r.height*.1)}})()`);
   await mouse("mousePressed", selectedMediaPoint);
   await mouse("mouseReleased", selectedMediaPoint);
   await waitFor(() => run('!!document.querySelector(".youtube-context-bar")'), "the video can be reselected after leaving interaction");
-  await clickByPointer('.youtube-context-bar [aria-label="Reproduzir vídeo no canvas"]');
-  await waitFor(() => run('!!document.querySelector("iframe.youtube-board-player")'), "the player starts for the Escape test");
   await key("Escape", "Escape", 27);
-  await waitFor(() => run('!document.querySelector("iframe.youtube-board-player")'), "Escape pauses and unmounts the inline YouTube player");
+  assert.equal(await run('document.querySelector("iframe.youtube-board-player")===window.__continuingYoutubePlayer'), true, "Escape clears editing without restarting playback");
   assert.equal(await modalOpen(), false, "inline playback remains outside the modal preview flow");
-  assert.equal(await run('!!document.querySelector(".youtube-context-bar")'), true, "Escape leaves the video selected for editing");
+  // A focused remote player may consume Escape; its playback must remain intact.
   await click(".save-button");
   await delay(450);
   const librarySaved = await currentLibrary();
@@ -518,7 +527,8 @@ export async function testLinkPreview({
       contextualUrlEditKeepsIdentity: true,
       invalidUrlRejected: true,
       selectionAndResizeHandleOutsidePlayer: true,
-      activePlayerResizePausesIframe: true,
+      activePlayerResizeRetainsIframe: true,
+      outsideClickKeepsPlayback: true,
       escapeAndOutsideClickReturnToEditing: true,
       externalExitAction: true,
       refererExpected: APP_REFERER,
@@ -526,6 +536,7 @@ export async function testLinkPreview({
       request: requestObserved,
       realPlaybackRequested: youtubePlayback,
       playbackObserved: !!playback,
+      playbackAfterDeselection,
       playback,
       playbackError,
     },

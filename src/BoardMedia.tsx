@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { type Item } from "./model";
 import { getAsset, openLink, saveAsset } from "./media";
+import { BoardPdf } from "./BoardPdf";
 import { normalizePreviewLink } from "./previewLink";
 export function BoardMedia({
   item,
@@ -18,6 +19,7 @@ export function BoardMedia({
   active,
   color,
   onOpenPdf,
+  onPdfPageChange,
   onOpenLink,
   selected = false,
   youtubeActive = false,
@@ -28,6 +30,7 @@ export function BoardMedia({
   active: boolean;
   color: string;
   onOpenPdf: (id: string) => void;
+  onPdfPageChange: (page: number) => void;
   onOpenLink: () => void;
   selected?: boolean;
   youtubeActive?: boolean;
@@ -68,14 +71,11 @@ export function BoardMedia({
   useEffect(() => {
     const element = media.current;
     if (!element) return;
-    if (!active) {
-      element.pause();
-      return;
-    }
-    if (item.mediaAutoplay) {
+    if (active && item.mediaAutoplay) {
       void element.play().catch(() => {});
     }
   }, [active, item.mediaAutoplay, url]);
+  if (isPdf) return <BoardPdf item={item} onOpen={() => onOpenPdf(item.assetId!)} onPageChange={onPdfPageChange} />;
   const failed = () =>
     setError(
       "Formato ou codec não reproduzível. Salve o arquivo para abrir em outro player.",
@@ -100,6 +100,7 @@ export function BoardMedia({
       <div className={`board-media media-youtube-inline ${selected ? "is-selected" : ""} ${youtubeActive ? "is-playing" : ""}`} data-media-control="true" style={{ width: "100%", height: "100%", color, borderColor: color + "70", pointerEvents: "auto" }}>
         {youtubeActive ? <iframe
           className="youtube-board-player"
+          style={{ pointerEvents: selected || interactive ? "auto" : "none" }}
           data-youtube-player={item.id}
           src={youtubeTarget.iframeUrl}
           title={`Player do YouTube: ${item.text || "Vídeo"}`}

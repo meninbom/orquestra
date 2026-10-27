@@ -6,6 +6,8 @@ import { sceneHeadingLayout, sceneHeadingLineHeight, sceneHeadingText, sceneHead
 import { measureHeadingWidth } from "./headingMetrics";
 import { sceneRenderBounds } from "./sceneBounds";
 import { normalizePreviewLink } from "./previewLink";
+import { mapPaletteColor, resolveItemTextColor } from "./itemAppearance";
+import { ArrowVisual } from "./ArrowVisual";
 
 const fontStacks: Record<NonNullable<Item["fontFamily"]>, string> = {
   Caveat: '"Caveat", cursive', "DM Sans": '"DM Sans", sans-serif', Georgia: "Georgia, serif", monospace: "monospace",
@@ -18,18 +20,15 @@ const fontStacks: Record<NonNullable<Item["fontFamily"]>, string> = {
 const measureText = (text: string, font: string) => {
   return measureHeadingWidth(text, font);
 };
-const textColor = (item: Item) => item.textColor ?? (item.type === "note" ? "#19342a" : item.color);
-const mappedColor = (color: string, light: boolean) => light ? ({
-  "#e2e9e2": "#273f35", "#8fe3b5": "#237f55", "#e9c879": "#936e16", "#85b9e2": "#396da0", "#c3a4e7": "#7b54a5", "#ee9b91": "#aa4e42",
-}[color] || color) : color;
+const mappedColor = mapPaletteColor;
 const markerId = (color: string) => `arrow-${[...color].map((character) => character.codePointAt(0)!.toString(16)).join("-")}`;
 
-type Props = { scene: Scene; index: number; light: boolean; images: Record<string, string>; embeddedFonts: string };
-export function StaticScene({ scene, index, light, images, embeddedFonts }: Props) {
+type Props = { scene: Scene; index: number; light: boolean; images: Record<string, string>; embeddedFonts: string; animated?: boolean };
+export function StaticScene({ scene, index, light, images, embeddedFonts, animated = false }: Props) {
   const visible = scene.items.filter((item) => !item.hidden && !(item.type === "arrow" && scene.items.some((target) => target.hidden && (target.id === item.from || target.id === item.to))));
   const bounds = sceneRenderBounds(scene, index);
   const { x: minX, y: minY, w: frameWidth, h: frameHeight } = bounds;
-  const bg = light ? "#f4f7f3" : "#0c1412";
+  const bg = light ? "#f4f7f3" : "#000000";
   const drawItem = (item: Item) => {
     const color = mappedColor(item.color, light);
     const family = fontStacks[item.fontFamily || "Caveat"];
@@ -37,16 +36,17 @@ export function StaticScene({ scene, index, light, images, embeddedFonts }: Prop
     const path = item.type === "arrow" ? arrowGeometry(item, scene.items).path : "";
     const Icon = iconByName(item.icon);
     if (item.type === "arrow") return (
-      <g key={item.id}>
-        <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" markerEnd={`url(#${markerId(item.color)})`} strokeDasharray={item.arrowStyle === "dashed" ? "9 6" : item.arrowStyle === "dotted" ? "1 6" : undefined} />
+      <g key={item.id} data-item={item.id}>
+        <ArrowVisual item={item} path={path} color={color} animated={animated} markerId={markerId(item.color)} />
       </g>
     );
-    if (item.type === "pen") return <polyline key={item.id} points={item.points?.map((p) => `${item.x + p[0]},${item.y + p[1]}`).join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />;
-    if (item.type === "icon") return <Icon key={item.id} x={item.x} y={item.y} width={item.w} height={item.h} color={color} strokeWidth={1.6} />;
+    if (item.type === "pen") return <g key={item.id} data-item={item.id}><polyline points={item.points?.map((p) => `${item.x + p[0]},${item.y + p[1]}`).join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></g>;
+    if (item.type === "icon") return <g key={item.id} data-item={item.id}><Icon x={item.x} y={item.y} width={item.w} height={item.h} color={color} strokeWidth={1.6} /></g>;
     if (item.type === "image") {
       const image = images[item.assetId || ""];
-      return image ? <image key={item.id} x={item.x} y={item.y} width={item.w} height={item.h} href={image} preserveAspectRatio={item.mediaFit === "cover" ? "xMidYMid slice" : "xMidYMid meet"} /> : staticCard(item, color, light);
+      return image ? <g key={item.id} data-item={item.id}><image x={item.x} y={item.y} width={item.w} height={item.h} href={image} preserveAspectRatio={item.mediaFit === "cover" ? "xMidYMid slice" : "xMidYMid meet"} /></g> : staticCard(item, color, light);
     }
+    if (item.type === "file" && images[`pdf:${item.assetId}:${item.pdfPage || 1}`]) return <g key={item.id} data-item={item.id}><rect x={item.x} y={item.y} width={item.w} height={item.h} fill="#fff" /><image data-pdf-preview={item.assetId} x={item.x} y={item.y} width={item.w} height={item.h} href={images[`pdf:${item.assetId}:${item.pdfPage || 1}`]} preserveAspectRatio="xMidYMid meet" /></g>;
     if (["video", "audio", "file", "link"].includes(item.type)) return staticCard(item, color, light);
     const align = item.textAlign || (["agent", "text", "note"].includes(item.type) ? "left" : "center");
     const anchor = align === "center" ? "middle" : align === "right" ? "end" : "start";
@@ -69,18 +69,18 @@ export function StaticScene({ scene, index, light, images, embeddedFonts }: Prop
           ? <><rect width="25" height="32" rx="3" /><path d="M6 9h13M6 16h13M6 23h8" /></>
           : <><circle cx="16" cy="5" r="5" /><circle cx="4" cy="29" r="5" /><circle cx="28" cy="29" r="5" /><path d="m13 9-7 15m13-15 7 15" /></>;
     return (
-      <g key={item.id}>
+      <g key={item.id} data-item={item.id}>
         {item.type === "text" && <rect x={item.x} y={item.y} width={item.w} height={item.h} fill={item.fill} fillOpacity={item.fillOpacity ?? 1} stroke={item.fill === "transparent" ? "none" : color} strokeWidth="2" />}
         {item.type === "ellipse" ? <ellipse cx={item.x + item.w / 2} cy={item.y + item.h / 2} rx={item.w / 2} ry={item.h / 2} stroke={color} strokeWidth="2" fill={item.fill} fillOpacity={item.fillOpacity ?? 1} /> : item.type !== "text" ? <rect x={item.x} y={item.y} width={item.w} height={item.h} rx={item.type === "note" ? 2 : item.type === "frame" ? 5 : 15} fill={item.fill} fillOpacity={item.fillOpacity ?? (item.type === "note" ? 0.9 : 1)} stroke={color} strokeWidth={item.type === "frame" ? 1.5 : 2} strokeDasharray={item.type === "frame" ? "8 6" : undefined} /> : null}
         {item.type === "agent" && <g transform={`translate(${item.x + 24},${item.y + 28})`} stroke={color} strokeWidth="1.7" fill="none">{item.icon ? <Icon x={0} y={0} width={32} height={32} color={color} strokeWidth={1.7} /> : agentIcon}</g>}
         {item.type === "rect" && item.text && item.color === colors[1] && <g transform={`translate(${item.x + 22},${item.y + 22})`} fill="none" stroke={color} strokeWidth="2"><path d="M0 32V0c13-7 18 8 31 0v21c-13 8-18-7-31 0" /></g>}
         {item.type === "frame" && item.text && <g data-frame-title="true">
-          <rect x={item.x + 8} y={item.y - frameTitleHeight(item)} width={Math.max(0, item.w - 16)} height={frameTitleHeight(item)} fill={light ? "#f4f7f3" : "#0c1412"} />
-          <text x={item.x + 14} y={item.y - frameTitleHeight(item) + item.size + 3} fill={mappedColor(textColor(item), light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
+          <rect x={item.x + 8} y={item.y - frameTitleHeight(item)} width={Math.max(0, item.w - 16)} height={frameTitleHeight(item)} fill={light ? "#f4f7f3" : "#000000"} />
+          <text x={item.x + 14} y={item.y - frameTitleHeight(item) + item.size + 3} fill={resolveItemTextColor({ ...item, fill: "transparent" }, light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
             {lines.map((line, n) => <tspan key={n} x={item.x + 14} dy={n ? item.size * lineHeight : 0}>{line}</tspan>)}
           </text>
         </g>}
-        {item.type !== "frame" && <text x={x} y={y} textAnchor={anchor} fill={mappedColor(textColor(item), light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
+        {item.type !== "frame" && <text x={x} y={y} textAnchor={anchor} fill={resolveItemTextColor(item, light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
           {lines.map((line, n) => <tspan key={n} x={x} dy={n ? item.size * (item.type === "agent" ? 0.72 : 1) * lineHeight : 0} fontSize={item.type === "agent" && n ? item.size * 0.72 : undefined} fontWeight={fontWeight} fontStyle={fontStyle}>{line}</tspan>)}
         </text>}
       </g>
@@ -125,7 +125,7 @@ function staticCard(item: Item, color: string, light: boolean) {
   if (item.type === "link" && item.url) {
     try {
       const target = normalizePreviewLink(item.url);
-      if (target.kind === "youtube") return <g key={item.id} data-youtube-card="true">
+      if (target.kind === "youtube") return <g key={item.id} data-item={item.id} data-youtube-card="true">
         <rect x={item.x} y={item.y} width={item.w} height={item.h} rx="16" fill="#101010" stroke={color} />
         <rect x={item.x + 1} y={item.y + 1} width={Math.max(0, item.w - 2)} height={Math.min(58, item.h * 0.28)} rx="15" fill="#171717" />
         <circle cx={item.x + 35} cy={item.y + Math.min(32, item.h * 0.15)} r="17" fill="#e62117" />
@@ -137,5 +137,6 @@ function staticCard(item: Item, color: string, light: boolean) {
       </g>;
     } catch {}
   }
-  return <g key={item.id}><rect x={item.x} y={item.y} width={item.w} height={item.h} rx="10" fill={background} stroke={color} /><text x={item.x + 18} y={item.y + 36} fill={mappedColor(item.textColor ?? color, light)} fontFamily="DM Sans, sans-serif" fontSize="20">{title.slice(0, 80)}</text><text x={item.x + 18} y={item.y + 62} fill={mappedColor(item.textColor ?? color, light)} fontFamily="DM Sans, sans-serif" fontSize="12">{item.type === "link" ? item.url || "Link" : item.type === "video" ? "Vídeo" : item.type === "audio" ? "Áudio" : "Arquivo anexado"}</text></g>;
+  const cardText = resolveItemTextColor({ ...item, fill: background }, light);
+  return <g key={item.id} data-item={item.id}><rect x={item.x} y={item.y} width={item.w} height={item.h} rx="10" fill={background} stroke={color} /><text x={item.x + 18} y={item.y + 36} fill={cardText} fontFamily="DM Sans, sans-serif" fontSize="20">{title.slice(0, 80)}</text><text x={item.x + 18} y={item.y + 62} fill={cardText} fontFamily="DM Sans, sans-serif" fontSize="12">{item.type === "link" ? item.url || "Link" : item.type === "video" ? "Vídeo" : item.type === "audio" ? "Áudio" : "Arquivo anexado"}</text></g>;
 }

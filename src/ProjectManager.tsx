@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   X,
   Plus,
@@ -25,6 +25,7 @@ import {
 import { importPayload } from "./media";
 import { transitions, type Transition, uid } from "./model";
 import { transitionLabels } from "./AnimationControls";
+import { ModalDialog } from "./ModalDialog";
 type Props = {
   library: Library;
   onChange(value: Library): void;
@@ -52,16 +53,6 @@ export function ProjectManager({
     [mergeName, setMergeName] = useState("Projeto mesclado");
   const [deleting, setDeleting] = useState<Project | null>(null);
   const file = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        deleting ? setDeleting(null) : onClose();
-      }
-    };
-    window.addEventListener("keydown", key, true);
-    return () => window.removeEventListener("keydown", key, true);
-  }, [deleting, onClose]);
   const projects = library.projects.filter((p) =>
     p.board.title
       .toLocaleLowerCase("pt-BR")
@@ -97,14 +88,8 @@ export function ProjectManager({
     notify("Cópia criada");
   };
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <section
-        className="projects-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Biblioteca de projetos"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalDialog className="projects-dialog" label="Biblioteca de projetos" onClose={onClose}>
+      <section className="projects-modal">
         <div className="projects-heading">
           <div>
             <span className="projects-kicker">
@@ -378,8 +363,8 @@ export function ProjectManager({
           }}
         />
         {deleting && (
-          <div className="project-confirm">
-            <div role="alertdialog" aria-label="Confirmar exclusão">
+          <ModalDialog className="project-confirm-dialog" label="Confirmar exclusão" onClose={() => setDeleting(null)}>
+            <div className="project-confirm-content" role="alertdialog">
               <Trash2 size={25} />
               <h3>Excluir “{deleting.board.title}”?</h3>
               <p>
@@ -401,9 +386,9 @@ export function ProjectManager({
                 </button>
               </div>
             </div>
-          </div>
+          </ModalDialog>
         )}
       </section>
-    </div>
+    </ModalDialog>
   );
 }

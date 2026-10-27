@@ -3,6 +3,7 @@ import { Clock3, RotateCcw, Save, X } from "lucide-react";
 import { type Project } from "./library";
 import { type ProjectVersion } from "./versions";
 import { listProjectVersions, versionStorageSummary } from "./versionStorage";
+import { ModalDialog } from "./ModalDialog";
 
 type Props = {
   project: Project;
@@ -39,14 +40,8 @@ export function VersionManager({ project, onClose, onCreate, onRestore }: Props)
   useEffect(() => { void reload(); }, [project.id]);
   const summary = versionStorageSummary(versions);
   return (
-    <div className="modal-backdrop version-backdrop" onClick={onClose}>
-      <section
-        className="version-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Histórico de versões do projeto"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <ModalDialog className="version-backdrop" label="Histórico de versões do projeto" onClose={onClose}>
+      <section className="version-modal">
         <header className="version-heading">
           <div>
             <span className="projects-kicker"><Clock3 size={14} /> HISTÓRICO DO PROJETO</span>
@@ -84,8 +79,8 @@ export function VersionManager({ project, onClose, onCreate, onRestore }: Props)
         </div>
         <footer className="version-footer"><span>Versões automáticas são registradas quando há mudanças e pelo menos 5 minutos desde a última versão.</span><button onClick={onClose}>Fechar</button></footer>
         {restoreVersion && (
-          <div className="version-confirm-backdrop">
-            <section className="version-confirm" role="alertdialog" aria-modal="true" aria-label="Confirmar restauração">
+          <ModalDialog className="version-confirm-backdrop" label="Confirmar restauração" onClose={() => setRestoreVersion(null)}>
+            <section className="version-confirm" role="alertdialog">
               <h3>Restaurar versão?</h3>
               <p>Restaurar “{restoreVersion.name}”? A versão atual será guardada antes da troca.</p>
               <footer>
@@ -98,9 +93,9 @@ export function VersionManager({ project, onClose, onCreate, onRestore }: Props)
                 }}>Restaurar versão</button>
               </footer>
             </section>
-          </div>
+          </ModalDialog>
         )}
       </section>
-    </div>
+    </ModalDialog>
   );
 }

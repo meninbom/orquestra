@@ -55,22 +55,17 @@ function isYoutubeEmbedUrl(value) {
 
 /** Pure request decision: true only for a direct YouTube player iframe. */
 function shouldAddYoutubePreviewReferer(details, mainWebContents) {
-  if (
-    !details ||
-    !mainWebContents ||
-    !Number.isInteger(mainWebContents.id) ||
-    details.webContentsId !== mainWebContents.id ||
-    details.resourceType !== "subFrame" ||
-    !isYoutubeEmbedUrl(details.url)
-  ) {
+  const windows = (Array.isArray(mainWebContents) ? mainWebContents : [mainWebContents])
+    .map((candidate) => candidate?.webContents || candidate)
+    .filter((candidate) => candidate && Number.isInteger(candidate.id));
+  if (!details || details.resourceType !== "subFrame" || !isYoutubeEmbedUrl(details.url)) {
     return false;
   }
 
   try {
-    const mainFrame = mainWebContents.mainFrame;
     const requestingFrame = details.frame;
     const parentFrame = requestingFrame?.parent;
-    return isFrame(mainFrame, parentFrame);
+    return windows.some((webContents) => webContents.id === details.webContentsId && isFrame(webContents.mainFrame, parentFrame));
   } catch {
     // A frame can be detached while Electron is processing a navigation.
     return false;
@@ -107,7 +102,7 @@ function createYoutubePreviewRefererListener(getMainWindow) {
       if (!mainWindow || mainWindow.isDestroyed?.()) {
         mainWebContents = null;
       } else {
-        mainWebContents = mainWindow.webContents;
+        mainWebContents = Array.isArray(mainWindow) ? mainWindow : mainWindow.webContents;
       }
     } catch {
       mainWebContents = null;

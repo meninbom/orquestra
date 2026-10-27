@@ -12,6 +12,7 @@ const { LibraryStore } = require("./storage.cjs");
 const { VersionStore } = require("./versions.cjs");
 const { validPdfPages, exportBoardPdfToFile } = require("./pdf.cjs");
 const { installYoutubePreviewReferer } = require("./youtube-preview.cjs");
+const { installPresenter } = require("./presenter.cjs");
 
 app.setName("Orquestra");
 const testPath = process.argv.find((arg) =>
@@ -42,7 +43,9 @@ else {
       minWidth: 800,
       minHeight: 600,
       title: "Orquestra",
-      backgroundColor: "#0c1412",
+      titleBarStyle: "hidden",
+      titleBarOverlay: { color: "#00000000", symbolColor: "#808080", height: 66 },
+      backgroundColor: "#000000",
       show: false,
       icon: path.join(__dirname, "icon.ico"),
       webPreferences: {
@@ -55,7 +58,6 @@ else {
       },
     });
     Menu.setApplicationMenu(null);
-    installYoutubePreviewReferer(mainWindow.webContents.session, () => mainWindow);
     const trusted = (event) => {
       if (
         event.sender !== mainWindow.webContents ||
@@ -102,15 +104,6 @@ else {
         }),
         { flag: "wx" },
       );
-    });
-    ipcMain.handle("asset:get", async (event, id) => {
-      trusted(event);
-      const paths = assetPaths(id);
-      const meta = JSON.parse(await fs.readFile(paths.meta, "utf8"));
-      const data = await fs.readFile(paths.file);
-      if (data.length > 100 * 1024 * 1024)
-        throw new Error("Mídia muito grande.");
-      return { ...meta, data };
     });
     ipcMain.handle("link:open", async (event, value) => {
       trusted(event);
@@ -240,6 +233,8 @@ else {
     mainWindow.webContents.session.setPermissionRequestHandler(
       (_webContents, _permission, callback) => callback(false),
     );
+    const presenter = installPresenter({ mainWindow, assetPaths });
+    installYoutubePreviewReferer(mainWindow.webContents.session, () => [mainWindow, presenter.audience]);
     mainWindow.once("ready-to-show", () => mainWindow.show());
     mainWindow.loadFile(path.join(__dirname, "../dist/orquestra.html"));
   });

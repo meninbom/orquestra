@@ -2,6 +2,8 @@ import { type Scene } from "./model";
 import { sceneRenderBounds } from "./sceneBounds";
 
 export const SVG_EDITOR_HELPERS = [
+  "[data-editor-helper]",
+  "[data-pdf-toolbar]",
   "[data-selection]",
   "[data-selection-transform]",
   "[data-selection-resize]",

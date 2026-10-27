@@ -94,6 +94,7 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   await mouse("mouseReleased", titleCenter);
   assert.equal(await run('!!document.querySelector("[data-scene-heading-selection=description]")'), true);
   assert.equal(await itemCount(), 0, "selecting a semantic heading does not create a text item");
+  await click(".section-advanced summary");
   await run(`document.querySelector(${JSON.stringify('[aria-label="Cabeçalho x"]')}).focus()`);
   await edit('[aria-label="Cabeçalho x"]', 260);
   await waitFor(async () => (await activeScene()).scene.headingLayout?.description?.x === 260, "section heading X control persists");
@@ -471,19 +472,18 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
 
   // Save one custom template and insert it twice; IDs and connectors are independent.
   await click(".aside-tabs button:first-child");
-  await click(".section-templates .template-actions button:nth-child(2)");
+  await click('[aria-label="Salvar seção como modelo"]');
   await edit(".action-dialog input", "Modelo QA");
   await click(".action-dialog .primary-action");
-  let templateSelect = await run('document.querySelector("[aria-label=\\"Modelo de seção\\"]").value');
-  assert.ok(templateSelect);
-  await click('[aria-label="Modelo de seção"]');
-  const templateOption = await run('[...document.querySelectorAll("[aria-label=\\"Modelo de seção\\"] option")].find(option=>option.textContent==="Modelo QA")?.value');
-  assert.ok(templateOption);
-  await edit('[aria-label="Modelo de seção"]', templateOption);
-  await click(".section-templates .template-actions button:first-child");
-  await waitFor(async () => (await library()).projects.find((project) => project.id === qaProjectId).board.scenes.length === 2, "first template insertion");
-  await click(".section-templates .template-actions button:first-child");
-  await waitFor(async () => (await library()).projects.find((project) => project.id === qaProjectId).board.scenes.length === 3, "second template insertion");
+  await waitFor(async () => (await library()).templates?.some((template) => template.name === "Modelo QA"), "custom template saved");
+  const templateOption = (await library()).templates.find((template) => template.name === "Modelo QA").id;
+  for (const expected of [2, 3]) {
+    await click(".new-section");
+    await waitFor(() => run('!!document.querySelector(".section-template-dialog[open]")'), "template picker opens");
+    await click(`[data-template-id=${JSON.stringify(templateOption)}]`);
+    await click(".template-create-button");
+    await waitFor(async () => (await library()).projects.find((project) => project.id === qaProjectId).board.scenes.length === expected, "template insertion confirmed");
+  }
   saved = await library();
   currentProject = saved.projects.find((project) => project.id === qaProjectId);
   const insertedA = currentProject.board.scenes.at(-2);

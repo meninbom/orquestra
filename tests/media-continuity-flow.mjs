@@ -1,0 +1,97 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { makeAcceptancePdf } from "./acceptance-flow.mjs";
+
+export async function testMediaContinuity({ cdp, run, waitFor, profile, cdpEvents }) {
+  await cdp("Runtime.enable");
+  const click = async (selector) => { await run(`document.querySelector(${JSON.stringify(selector)}).click()`); await delay(100); };
+  const currentScene = () => run(`window.orquestraDesktop.loadLibrary().then(l=>{const p=l.projects.find(p=>p.id===l.activeId);const index=parseInt(document.querySelector('.scene-controls span').textContent,10)-1;return p.board.scenes[index]})`);
+  const importFile = async (filename) => {
+    await click('[aria-label="Inserir mídia"]');
+    await waitFor(() => run('!!document.querySelector(".insert-modal input[type=file]")'), "file chooser");
+    const tree = await cdp("DOM.getDocument");
+    const input = await cdp("DOM.querySelector", { nodeId: tree.root.nodeId, selector: ".insert-modal input[type=file]" });
+    await cdp("DOM.setFileInputFiles", { nodeId: input.nodeId, files: [filename] });
+    await waitFor(async () => (await currentScene()).items.some(item => item.assetName === path.basename(filename)), "file persisted through import");
+    await waitFor(() => run('!document.querySelector(".insert-modal")'), "import closes");
+    return (await currentScene()).items.find(item => item.assetName === path.basename(filename));
+  };
+  await click(".new-section");
+  await waitFor(() => run('!!document.querySelector(".section-template-dialog[open]")'), "blank section picker");
+  await click(".template-create-button");
+  const pdfFile = path.join(profile, "inline-pages.pdf");
+  const bytes = makeAcceptancePdf();
+  await writeFile(pdfFile, bytes);
+  const pdf = await importFile(pdfFile);
+  await waitFor(() => run(`!!document.querySelector('[data-pdf-preview="${pdf.assetId}"]')`), "PDF content appears directly on the board");
+  assert.equal(await run('!!document.querySelector(".pdf-viewer")'), false);
+  const firstPage = await run(`document.querySelector('[data-pdf-preview="${pdf.assetId}"]').getAttribute('href')`);
+  assert.ok(firstPage.startsWith("data:image/png;base64,") && firstPage.length > 2000);
+  await click('[aria-label="Próxima página do PDF no quadro"]');
+  await waitFor(() => run(`document.querySelector('[data-pdf-preview="${pdf.assetId}"]')?.getAttribute('data-pdf-preview-page')==='2'`), "second PDF page renders on the board");
+  const secondPage = await run(`document.querySelector('[data-pdf-preview="${pdf.assetId}"]').getAttribute('href')`);
+  assert.notEqual(secondPage, firstPage);
+  await waitFor(async () => (await currentScene()).items.find(item => item.id === pdf.id).pdfPage === 2, "visible PDF page persists");
+  await writeFile(path.resolve(".qa/inline-pdf.png"), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await click(".export-button");
+  await run(`[...document.querySelectorAll('.dropdown button')].find(b=>b.textContent.includes('(.svg)')).click()`);
+  const svgFile = path.join(profile, "exports", "Nova seção.svg");
+  await waitFor(async () => { try { return (await readFile(svgFile, "utf8")).includes(secondPage); } catch { return false; } }, "SVG export contains the displayed PDF pixels");
+  assert.equal((await readFile(svgFile, "utf8")).includes("data-pdf-toolbar"), false);
+  assert.deepEqual(await readFile(path.join(profile, "media", `${pdf.assetId}.bin`)), bytes);
+
+  await click(".export-button");
+  await run(`[...document.querySelectorAll('.dropdown button')].find(b=>b.textContent.includes('board inteiro (.pdf)')).click()`);
+  const boardPdf = path.join(profile, "exports", "Orquestração de agentes.pdf");
+  await waitFor(async () => { try { const content = await readFile(boardPdf); return content.subarray(0, 4).toString() === "%PDF" && content.includes(Buffer.from("/Subtype /Image")); } catch { return false; } }, "board PDF exports the rasterized PDF page", 25000);
+
+  const mp3File = path.join(profile, "continuity.mp3");
+  const mp4File = path.join(profile, "continuity.mp4");
+  const ffmpeg = promisify(execFile);
+  await ffmpeg("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "20", "-c:a", "libmp3lame", "-q:a", "7", "-y", mp3File], { windowsHide: true });
+  await ffmpeg("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=steelblue:s=160x90:r=15", "-t", "20", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-y", mp4File], { windowsHide: true });
+  const audio = await importFile(mp3File);
+  const video = await importFile(mp4File);
+  await waitFor(() => run('document.querySelector("audio")?.readyState>=2&&document.querySelector("video")?.readyState>=2'), "MP3 and MP4 decode");
+  const activateMedia = async (id) => {
+    await click('[aria-label="Camadas"]');
+    await click(`[data-layer="${id}"] .layer-select`);
+    await click('.aside-tabs button:nth-child(2)');
+    await run(`[...document.querySelectorAll('button.preview-motion')].find(b=>b.textContent.includes('Interagir com mídia')).click()`);
+    await delay(100);
+  };
+  const outsidePoint = await run(`(()=>{const r=document.querySelector('.canvas').getBoundingClientRect();return{x:r.x+90,y:r.bottom-8}})()`);
+  const clickOutside = async () => { for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, ...outsidePoint, button: "left", clickCount: 1 }); };
+  await activateMedia(audio.id);
+  await run(`(()=>{const e=document.querySelector('audio');e.muted=true;return e.play()})()`);
+  await clickOutside(); await delay(600);
+  assert.equal(await run('document.querySelectorAll(".scene-content > [data-selected=true]").length'), 0, 'empty canvas actually deselects the MP3');
+  assert.equal(await run('document.querySelector("audio").paused'), false, 'MP3 keeps playing when interaction ends');
+  await activateMedia(video.id);
+  await run(`(()=>{const e=document.querySelector('video');e.muted=true;return e.play()})()`);
+  const initialTime = await run(`[...document.querySelectorAll('audio,video')].map(e=>({time:e.currentTime,paused:e.paused}))`);
+  const point = await run(`(()=>{const r=document.querySelector('.canvas').getBoundingClientRect();return{x:r.x+90,y:r.bottom-8}})()`);
+  for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, ...point, button: "left", clickCount: 1 });
+  assert.equal(await run('document.querySelectorAll(".scene-content > [data-selected=true]").length'), 0, 'empty canvas actually deselects the MP4');
+  await click('[aria-label="Abrir configurações do board"]');
+  await delay(1200);
+  const afterBlur = await run(`[...document.querySelectorAll('audio,video')].map(e=>({time:e.currentTime,paused:e.paused}))`);
+  assert.equal(afterBlur.length, 2);
+  afterBlur.forEach((state, index) => { assert.equal(state.paused, false); assert.ok(state.time > initialTime[index].time + 0.5); });
+  await run(`[...document.querySelectorAll('audio,video')].forEach(e=>e.pause())`);
+  await click(".save-button");
+  await run("window.__continuityReload=true");
+  await cdp("Page.reload");
+  await waitFor(() => run('!window.__continuityReload&&!!document.querySelector(".document-title")'), "reload");
+  const pdfSection = await run(`window.orquestraDesktop.loadLibrary().then(l=>l.projects.find(p=>p.id===l.activeId).board.scenes.findIndex(s=>s.items.some(i=>i.id==='${pdf.id}')))`);
+  await click(`.section-row:nth-child(${pdfSection + 1})`);
+  await waitFor(() => run(`document.querySelector('[data-pdf-preview="${pdf.assetId}"]')?.getAttribute('data-pdf-preview-page')==='2'`), "PDF page remains visible after reload");
+  const errors = cdpEvents.filter(e => e.method === "Runtime.exceptionThrown");
+  assert.deepEqual(errors, []);
+  return { inlinePdf: true, pageNavigation: true, currentPageAfterReload: 2, svgContainsPdfPixels: true, boardPdfContainsImage: true, originalPdfUnchanged: true,
+    mp3: { id: audio.id, before: initialTime[0], afterDeselection: afterBlur[0] }, mp4: { id: video.id, before: initialTime[1], afterDeselection: afterBlur[1] }, runtimeErrors: [] };
+}

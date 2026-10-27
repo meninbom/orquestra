@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { type Board } from "./model";
 import { getAsset, blobData } from "./media";
+import { createPdfDocumentTask, renderPdfPageImage } from "./pdfPreview";
 import { StaticScene } from "./StaticScene";
 
 async function embeddedFont(path: string): Promise<string> {
@@ -23,6 +24,19 @@ export async function renderBoardPages(board: Board, light: boolean): Promise<st
   for (const id of imageIds) {
     const asset = await getAsset(id);
     images[id] = await blobData(asset.blob);
+  }
+  const pdfItems = board.scenes.flatMap((scene) => scene.items.filter((item) => !item.hidden && item.type === "file" && item.assetId && (item.assetMime === "application/pdf" || item.assetName?.toLowerCase().endsWith(".pdf"))));
+  for (const item of pdfItems) {
+    const key = `pdf:${item.assetId}:${item.pdfPage || 1}`;
+    if (images[key]) continue;
+    let task: ReturnType<typeof createPdfDocumentTask> | undefined;
+    try {
+      const asset = await getAsset(item.assetId!);
+      task = createPdfDocumentTask(new Uint8Array(await asset.blob.arrayBuffer()));
+      task.onPassword = () => { void task?.destroy().catch(() => {}); };
+      images[key] = (await renderPdfPageImage(await task.promise, item.pdfPage || 1)).url;
+    } catch { /* Unreadable or protected originals retain their attachment card. */ }
+    finally { if (task) await task.destroy().catch(() => {}); }
   }
   return board.scenes.map((scene, index) =>
     renderToStaticMarkup(<StaticScene scene={scene} index={index} light={light} images={images} embeddedFonts={embeddedFonts} />),

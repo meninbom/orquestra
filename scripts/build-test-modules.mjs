@@ -38,6 +38,7 @@ for (const [entry, outfile] of [
   ["src/sectionHeadingLayout.ts", ".qa/section-heading-layout.cjs"],
   ["src/sceneBounds.ts", ".qa/scene-bounds.cjs"],
   ["src/svgExport.ts", ".qa/svg-export.cjs"],
+  ["src/laserGeometry.ts", ".qa/laser-geometry.cjs"],
 ]) {
   await build({ entryPoints: [entry], bundle: true, platform: "node", format: "cjs", outfile, target: "node22" });
 }
