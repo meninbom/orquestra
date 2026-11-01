@@ -245,8 +245,9 @@ export async function testPdfConnectionsFrames({ cdp, run, waitFor, profile }) {
     await mouse("mouseReleased", frameTitlePoint, 0, clickCount);
     if (clickCount === 1) await delay(100);
   }
-  await waitFor(() => run('document.activeElement?.getAttribute("aria-label")==="Título do frame"'), "frame title double-click editor");
-  await edit('[aria-label="Título do frame"]', "Quadro de validação");
+  await waitFor(() => run('document.activeElement?.getAttribute("aria-label")==="Editar título do frame"'), "frame title double-click editor");
+  await edit('[aria-label="Editar título do frame"]', "Quadro de validação");
+  await run(`document.querySelector('[aria-label="Editar título do frame"]').blur()`);
   await waitFor(async () => (await scene()).items.find((item) => item.id === frameItem.id)?.text === "Quadro de validação", "frame title panel edit");
   assert.equal(await run(`document.querySelectorAll('[data-item="${frameItem.id}"] [data-frame-title]').length`), 1);
   await click(".history button:first-child");

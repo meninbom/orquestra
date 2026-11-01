@@ -1,5 +1,7 @@
 const fs = require("node:fs/promises");
 const crypto = require("node:crypto");
+const os = require("node:os");
+const path = require("node:path");
 
 function validPdfPages(pages) {
   return Array.isArray(pages) && pages.length >= 1 && pages.length <= 200 &&
@@ -20,8 +22,13 @@ async function exportBoardPdfToFile(BrowserWindow, pages, filePath) {
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'"><style>@page{size:A4 landscape;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff}.page{width:297mm;height:210mm;display:flex;align-items:center;justify-content:center;page-break-after:always;overflow:hidden}.page:last-child{page-break-after:auto}.page img{max-width:100%;max-height:100%;object-fit:contain}</style></head><body>${pageMarkup}</body></html>`;
   const window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
   const temporary = filePath + "." + crypto.randomUUID() + ".tmp";
+  let printDirectory;
   try {
-    await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+    // Embedded fonts and many pages can exceed Chromium's data URL limit.
+    printDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "orquestra-print-"));
+    const printFile = path.join(printDirectory, "board.html");
+    await fs.writeFile(printFile, html, { encoding: "utf8", flag: "wx" });
+    await window.loadFile(printFile);
     await window.webContents.executeJavaScript("Promise.all([...document.images].map(image => image.decode())).then(() => document.fonts.ready).then(() => true)", true);
     const pdf = await window.webContents.printToPDF({ pageSize: "A4", landscape: true, marginsType: 1, printBackground: true, preferCSSPageSize: true });
     const handle = await fs.open(temporary, "wx");
@@ -34,6 +41,9 @@ async function exportBoardPdfToFile(BrowserWindow, pages, filePath) {
     throw error;
   } finally {
     if (!window.isDestroyed()) window.destroy();
+    if (printDirectory && path.dirname(printDirectory) === os.tmpdir() && path.basename(printDirectory).startsWith("orquestra-print-")) {
+      await fs.rm(printDirectory, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 
