@@ -26,6 +26,7 @@ import { importPayload } from "./media";
 import { transitions, type Transition, uid } from "./model";
 import { transitionLabels } from "./AnimationControls";
 import { ModalDialog } from "./ModalDialog";
+import "./projects-dialog.css";
 type Props = {
   library: Library;
   onChange(value: Library): void;
@@ -56,8 +57,9 @@ export function ProjectManager({
   const projects = library.projects.filter((p) =>
     p.board.title
       .toLocaleLowerCase("pt-BR")
-      .includes(query.toLocaleLowerCase("pt-BR")),
+      .includes(query.trim().toLocaleLowerCase("pt-BR")),
   );
+  const allVisibleSelected = projects.length > 0 && projects.every((p) => selected.includes(p.id));
   const add = () => {
     const p = makeProject(name || "Novo projeto", template);
     onChange({
@@ -121,17 +123,24 @@ export function ProjectManager({
                 onChange={(e) => setQuery(e.target.value)}
               />
               <button
+                disabled={!projects.length}
                 onClick={() =>
-                  setSelected(selected.length ? [] : projects.map((p) => p.id))
+                  setSelected((current) => allVisibleSelected
+                    ? current.filter((id) => !projects.some((p) => p.id === id))
+                    : [...new Set([...current, ...projects.map((p) => p.id)])])
                 }
               >
-                {selected.length ? "Desmarcar" : "Selecionar todos"}
+                {allVisibleSelected ? "Desmarcar visíveis" : "Selecionar todos"}
               </button>
             </div>
+            <p className="projects-result-count" role="status">
+              {projects.length} {projects.length === 1 ? "projeto" : "projetos"}{query.trim() ? " encontrados" : " na biblioteca"}
+              {selected.length > 0 && ` · ${selected.length} selecionado${selected.length === 1 ? "" : "s"}`}
+            </p>
             <div className="project-list">
               {projects.map((p) => (
                 <article
-                  className={`project-row ${p.id === library.activeId ? "current" : ""}`}
+                  className={`project-row ${p.id === library.activeId ? "current" : ""} ${selected.includes(p.id) ? "selected" : ""}`}
                   data-project={p.id}
                   key={p.id}
                 >
@@ -201,11 +210,12 @@ export function ProjectManager({
               {!projects.length && (
                 <div className="projects-empty">
                   <Search size={26} />
-                  <p>Nenhum projeto encontrado.</p>
+                  <p>{query.trim() ? "Nenhum projeto encontrado para esta busca." : "Sua biblioteca ainda não tem projetos."}</p>
+                  {query.trim() && <button onClick={() => setQuery("")}>Limpar busca</button>}
                 </div>
               )}
             </div>
-            <div className="merge-box">
+            {selected.length >= 2 ? <div className="merge-box">
               <div>
                 <Combine size={18} />
                 <span>
@@ -227,7 +237,7 @@ export function ProjectManager({
                   Mesclar {selected.length > 0 ? `(${selected.length})` : ""}
                 </button>
               </div>
-            </div>
+            </div> : <p className="projects-selection-help">Selecione dois ou mais projetos para mesclar suas seções.</p>}
           </div>
           <div className="projects-create">
             <span className="projects-kicker">UM NOVO COMEÇO</span>
@@ -256,6 +266,8 @@ export function ProjectManager({
               <Plus size={16} />
               Criar projeto
             </button>
+            <details className="project-options">
+              <summary>Configurações da biblioteca</summary>
             <div className="project-transition">
               <label>
                 Transição entre projetos
@@ -320,6 +332,7 @@ export function ProjectManager({
                 </button>
               )}
             </div>
+            </details>
           </div>
         </div>
         <footer className="projects-footer">

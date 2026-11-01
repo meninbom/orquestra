@@ -13,6 +13,9 @@ const { VersionStore } = require("./versions.cjs");
 const { validPdfPages, exportBoardPdfToFile } = require("./pdf.cjs");
 const { installYoutubePreviewReferer } = require("./youtube-preview.cjs");
 const { installPresenter } = require("./presenter.cjs");
+const { AiClient } = require("./ai.cjs");
+const { validateAiOutline } = require("./aiLayout.cjs");
+const { installOperator } = require("./operator.cjs");
 
 app.setName("Orquestra");
 const testPath = process.argv.find((arg) =>
@@ -65,6 +68,28 @@ else {
       )
         throw new Error("Origem não permitida.");
     };
+    const ai = new AiClient(path.join(app.getPath("userData"), "codex-oauth"));
+    app.on("before-quit", () => ai.close());
+    ipcMain.handle("ai:status", (event) => { trusted(event); return ai.status(); });
+    ipcMain.handle("ai:models", (event) => { trusted(event); return ai.models(); });
+    ipcMain.handle("ai:login", async (event) => {
+      trusted(event); const result = await ai.login();
+      const url = new URL(result.authUrl);
+      if (url.protocol !== "https:" || !["auth.openai.com", "chatgpt.com"].includes(url.hostname) || url.username || url.password) { await ai.cancelLogin(); throw new Error("URL de login não reconhecida."); }
+      await shell.openExternal(url.href); return true;
+    });
+    ipcMain.handle("ai:cancel-login", (event) => { trusted(event); return ai.cancelLogin(); });
+    ipcMain.handle("ai:logout", (event) => { trusted(event); return ai.logout(); });
+    ipcMain.handle("ai:cancel", (event) => { trusted(event); return ai.cancel(); });
+    ipcMain.handle("ai:generate", async (event, prompt, model, pages) => {
+      trusted(event);
+      if (!Array.isArray(pages) || pages.length > 20 || !pages.every(p => Number.isInteger(p) && p > 0)) throw new Error("Páginas inválidas.");
+      return validateAiOutline(await ai.generate(prompt, model), pages);
+    });
+    ipcMain.handle("asset:remove-new", async (event, id) => {
+      trusted(event); const {file,meta} = assetPaths(id);
+      await Promise.all([fs.rm(file,{force:true}),fs.rm(meta,{force:true})]);
+    });
     ipcMain.handle("library:load", (event) => {
       trusted(event);
       return store.load();
@@ -94,7 +119,7 @@ else {
       const { dir, file, meta } = assetPaths(value.id);
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(file, value.data, { flag: "wx" });
-      await fs.writeFile(
+      try { await fs.writeFile(
         meta,
         JSON.stringify({
           id: value.id,
@@ -103,7 +128,7 @@ else {
           size: value.data.length,
         }),
         { flag: "wx" },
-      );
+      ); } catch (error) { await fs.rm(file, {force:true}); throw error; }
     });
     ipcMain.handle("link:open", async (event, value) => {
       trusted(event);
@@ -234,6 +259,7 @@ else {
       (_webContents, _permission, callback) => callback(false),
     );
     const presenter = installPresenter({ mainWindow, assetPaths });
+    installOperator({ mainWindow, rendering: presenter.rendering });
     installYoutubePreviewReferer(mainWindow.webContents.session, () => [mainWindow, presenter.audience]);
     mainWindow.once("ready-to-show", () => mainWindow.show());
     mainWindow.loadFile(path.join(__dirname, "../dist/orquestra.html"));

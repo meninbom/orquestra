@@ -43,6 +43,39 @@ export const fontFamilies = [
   "Consolas", "Courier New", "Comic Sans MS", "Segoe Print", "Segoe Script", "Impact",
 ] as const;
 export type FontFamily = (typeof fontFamilies)[number];
+/** Inline formatting over character offsets of `Item.text`. */
+export type RichMark = {
+  start: number;
+  end: number;
+  /** Absent inherits the item-level value; explicit values win. */
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+  /** `#rrggbb` text color for this run. */
+  color?: string;
+  /** `#rrggbb` highlight behind this run. */
+  highlight?: string;
+  /** Absolute font size in canvas units for this run. */
+  size?: number;
+  fontFamily?: FontFamily;
+  /** Only `https:` links survive validation. */
+  link?: string;
+};
+export const richListStyles = ["none", "bullet", "ordered"] as const;
+export const richTextPresets = ["body", "lead", "h1", "h2", "h3", "quote"] as const;
+/** Paragraph-level formatting; `blocks[i]` styles the i-th paragraph. */
+export type RichBlockStyle = {
+  list?: (typeof richListStyles)[number];
+  /** Hanging indent level, 0-8. */
+  indent?: number;
+  align?: "left" | "center" | "right";
+  preset?: (typeof richTextPresets)[number];
+};
+export type RichText = {
+  marks: RichMark[];
+  blocks: RichBlockStyle[];
+};
 export type Item = {
   id: string;
   type: Tool;
@@ -74,6 +107,10 @@ export type Item = {
   mediaAutoplay?: boolean;
   mediaMuted?: boolean;
   points?: number[][];
+  penWidth?: number;
+  penOpacity?: number;
+  /** Legacy strokes keep their original polyline geometry. */
+  penSmooth?: boolean;
   from?: string;
   to?: string;
   /** Optional fixed ports for connectors; old boards use automatic side selection. */
@@ -87,8 +124,19 @@ export type Item = {
   bold?: boolean;
   italic?: boolean;
   textAlign?: "left" | "center" | "right";
+  verticalAlign?: "top" | "center" | "bottom";
+  /** Horizontal and vertical text insets in canvas units. */
+  textPaddingX?: number;
+  textPaddingY?: number;
   lineHeight?: number;
+  /** `autoHeight` remains the legacy grow/fixed switch for older boards. */
+  autoFit?: "grow" | "shrink" | "fixed";
   autoHeight?: boolean;
+  /** Arrow-label appearance and placement; absent values preserve legacy defaults. */
+  arrowLabelPosition?: number;
+  arrowLabelFill?: string;
+  /** Per-run rich formatting; absent keeps the 1.9.x plain-text rendering path. */
+  rich?: RichText;
 };
 export type ArrowPort = "north" | "east" | "south" | "west";
 export const arrowPorts: ArrowPort[] = ["north", "east", "south", "west"];
@@ -325,7 +373,8 @@ export const initialBoard = (): Board => ({
 export function loadBoard(): Board {
   try {
     const d = JSON.parse(localStorage.getItem("orquestra-board") || "null");
-    if (validBoard(d)) return d;
+    const board = repairBoard(d);
+    if (board) return board;
   } catch {}
   return initialBoard();
 }
@@ -343,6 +392,127 @@ function validGroupMembership(items: Item[]): boolean {
     if (item.groupId) counts.set(item.groupId, (counts.get(item.groupId) || 0) + 1);
   }
   return items.every((item) => !item.groupId || (counts.get(item.groupId) || 0) >= 2);
+}
+
+const hexColor = /^#[\da-f]{6}$/i;
+const richLimits = { marks: 600, blocks: 800, text: 20000 } as const;
+
+/** Painting order is stored order; later marks win where they overlap. */
+export function validRichText(text: string, value: unknown): value is RichText {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const rich = value as RichText;
+  if (!Array.isArray(rich.marks) || !Array.isArray(rich.blocks)) return false;
+  if (rich.marks.length > richLimits.marks || rich.blocks.length > richLimits.blocks) return false;
+  if (text.length > richLimits.text) return false;
+  return (
+    rich.marks.every((mark) => {
+      if (!mark || typeof mark !== "object" || Array.isArray(mark)) return false;
+      if (!Number.isInteger(mark.start) || !Number.isInteger(mark.end)) return false;
+      if (mark.start < 0 || mark.end > text.length || mark.start >= mark.end) return false;
+      const booleanKeys = ["bold", "italic", "underline", "strike"] as const;
+      if (booleanKeys.some((key) => mark[key] !== undefined && typeof mark[key] !== "boolean")) return false;
+      const hasFormat =
+        booleanKeys.some((key) => mark[key] === true) ||
+        mark.color !== undefined ||
+        mark.highlight !== undefined ||
+        mark.size !== undefined ||
+        mark.fontFamily !== undefined ||
+        mark.link !== undefined;
+      if (!hasFormat) return false;
+      if (mark.color !== undefined && (typeof mark.color !== "string" || !hexColor.test(mark.color))) return false;
+      if (mark.highlight !== undefined && (typeof mark.highlight !== "string" || !hexColor.test(mark.highlight))) return false;
+      if (mark.size !== undefined && (!Number.isFinite(mark.size) || mark.size < 8 || mark.size > 400)) return false;
+      if (mark.fontFamily !== undefined && !fontFamilies.includes(mark.fontFamily)) return false;
+      if (mark.link !== undefined) {
+        if (typeof mark.link !== "string" || mark.link.length > 2048) return false;
+        try {
+          const url = new URL(mark.link);
+          if (url.protocol !== "https:" || url.username || url.password) return false;
+        } catch {
+          return false;
+        }
+      }
+      return true;
+    }) &&
+    rich.blocks.every((block) => {
+      if (block === null || block === undefined) return true;
+      if (typeof block !== "object" || Array.isArray(block)) return false;
+      if (block.list !== undefined && !richListStyles.includes(block.list)) return false;
+      if (block.align !== undefined && !["left", "center", "right"].includes(block.align)) return false;
+      if (block.preset !== undefined && !richTextPresets.includes(block.preset)) return false;
+      if (block.indent !== undefined && (!Number.isInteger(block.indent) || block.indent < 0 || block.indent > 8)) return false;
+      return true;
+    })
+  );
+}
+
+/** Clamp and prune rich formatting so recovered or imported boards never lose content. */
+export function sanitizeRichText(text: string, value: unknown): RichText | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as RichText;
+  if (!Array.isArray(raw.marks) || !Array.isArray(raw.blocks)) return undefined;
+  const marks: RichMark[] = [];
+  for (const mark of raw.marks) {
+    if (!mark || typeof mark !== "object") continue;
+    const start = Math.max(0, Math.min(text.length, Math.floor(Number(mark.start))));
+    const end = Math.max(0, Math.min(text.length, Math.ceil(Number(mark.end))));
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) continue;
+    const next: RichMark = { start, end };
+    if (mark.bold === true || mark.bold === false) next.bold = mark.bold;
+    if (mark.italic === true || mark.italic === false) next.italic = mark.italic;
+    if (mark.underline === true) next.underline = true;
+    if (mark.strike === true) next.strike = true;
+    if (typeof mark.color === "string" && hexColor.test(mark.color)) next.color = mark.color;
+    if (typeof mark.highlight === "string" && hexColor.test(mark.highlight)) next.highlight = mark.highlight;
+    if (Number.isFinite(mark.size)) next.size = Math.max(8, Math.min(400, Number(mark.size)));
+    if (mark.fontFamily && fontFamilies.includes(mark.fontFamily)) next.fontFamily = mark.fontFamily;
+    if (typeof mark.link === "string") {
+      try {
+        const url = new URL(mark.link);
+        if (url.protocol === "https:" && !url.username && !url.password) next.link = mark.link;
+      } catch { /* drop unsafe links */ }
+    }
+    const formatted = Object.keys(next).some((key) => key !== "start" && key !== "end");
+    if (formatted) marks.push(next);
+    if (marks.length >= richLimits.marks) break;
+  }
+  const blocks: RichBlockStyle[] = [];
+  for (const block of raw.blocks.slice(0, richLimits.blocks)) {
+    if (!block || typeof block !== "object") { blocks.push({}); continue; }
+    const next: RichBlockStyle = {};
+    if (block.list && richListStyles.includes(block.list)) next.list = block.list;
+    if (block.align && ["left", "center", "right"].includes(block.align)) next.align = block.align;
+    if (block.preset && richTextPresets.includes(block.preset)) next.preset = block.preset;
+    if (Number.isFinite(block.indent)) next.indent = Math.max(0, Math.min(8, Math.round(Number(block.indent))));
+    blocks.push(next);
+  }
+  if (!marks.length && !blocks.some((block) => Object.keys(block).length)) return undefined;
+  return { marks, blocks };
+}
+
+/**
+ * Best-effort recovery: a board whose only defect is rich formatting is
+ * repaired instead of being rejected, so loading never discards content.
+ */
+export function repairBoard(value: unknown): Board | undefined {
+  if (validBoard(value)) return value;
+  const board = value as Board;
+  if (!board || board.version !== 1 || !Array.isArray(board.scenes)) return undefined;
+  try {
+    for (const scene of board.scenes) {
+      if (!scene || !Array.isArray(scene.items)) continue;
+      for (const item of scene.items) {
+        if (!item || typeof item !== "object" || typeof item.text !== "string") continue;
+        if (item.rich === undefined) continue;
+        const rich = sanitizeRichText(item.text, item.rich);
+        if (rich) item.rich = rich;
+        else delete item.rich;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return validBoard(board) ? board : undefined;
 }
 
 export function validBoard(d: unknown): d is Board {
@@ -478,6 +648,7 @@ export function validBoard(d: unknown): d is Board {
             (i.fontFamily === undefined || fontFamilies.includes(i.fontFamily)) &&
             (i.name === undefined ||
               (typeof i.name === "string" && i.name.length <= 200)) &&
+            (i.rich === undefined || validRichText(typeof i.text === "string" ? i.text : "", i.rich)) &&
             (i.groupId === undefined ||
               (typeof i.groupId === "string" && i.groupId.length <= 80)) &&
             [i.locked, i.hidden, i.bold, i.italic, i.autoHeight].every(
@@ -485,10 +656,19 @@ export function validBoard(d: unknown): d is Board {
             ) &&
             (i.textAlign === undefined ||
               ["left", "center", "right"].includes(i.textAlign)) &&
+            (i.verticalAlign === undefined ||
+              ["top", "center", "bottom"].includes(i.verticalAlign)) &&
+            [i.textPaddingX, i.textPaddingY].every((v) => v === undefined || (Number.isFinite(v) && v >= 0 && v <= 200)) &&
+            (i.autoFit === undefined || ["grow", "shrink", "fixed"].includes(i.autoFit)) &&
+            (i.arrowLabelPosition === undefined || (i.type === "arrow" && Number.isFinite(i.arrowLabelPosition) && i.arrowLabelPosition >= 0 && i.arrowLabelPosition <= 1)) &&
+            (i.arrowLabelFill === undefined || (i.type === "arrow" && typeof i.arrowLabelFill === "string" && /^#[\da-f]{6}$/i.test(i.arrowLabelFill))) &&
             (i.lineHeight === undefined ||
               (Number.isFinite(i.lineHeight) &&
                 i.lineHeight >= 0.7 &&
                 i.lineHeight <= 3)) &&
+            (i.penWidth === undefined || (Number.isFinite(i.penWidth) && i.penWidth >= 1 && i.penWidth <= 24)) &&
+            (i.penOpacity === undefined || (Number.isFinite(i.penOpacity) && i.penOpacity >= 0.1 && i.penOpacity <= 1)) &&
+            (i.penSmooth === undefined || typeof i.penSmooth === "boolean") &&
             (!i.points ||
               (Array.isArray(i.points) &&
                 i.points.every(

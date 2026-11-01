@@ -1,0 +1,26 @@
+.app-modal-dialog.ai-dialog { width:min(900px,95vw); height:min(780px,calc(100dvh - 32px)); max-height:calc(100dvh - 32px); color:var(--text); background:var(--surface); border:1px solid var(--line); border-radius: var(--r-xl); padding:0; overflow:hidden; }
+.app.desktop .app-modal-dialog.ai-dialog { height:min(780px,calc(100dvh - 86px)); max-height:calc(100dvh - 86px); }
+.ai-dialog > .ai-inner { box-sizing:border-box; height:100%; max-height:100%; padding:24px; display:flex; flex-direction:column; overflow:hidden; gap:16px; }
+.ai-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding-right:8px; }
+.ai-inner > header { flex:none; }
+.ai-footer { flex:none; border-top:1px solid var(--line); padding-top:12px; display:flex; justify-content:flex-end; }
+.ai-footer .ai-apply { background:var(--text); color:var(--surface); font-weight:600; }
+.ai-inner input,.ai-inner select,.ai-inner textarea { box-sizing:border-box; width:100%; min-width:0; }
+.ai-inner textarea { resize:vertical; }
+@media (max-height:650px) { .ai-dialog > .ai-inner { padding:16px; gap:10px; } .ai-inner header p { display:none; } }
+.ai-inner header { display:flex; justify-content:space-between; align-items:start; height:auto; min-height:0; padding:0; gap:16px; border:0; background:transparent; }
+.ai-inner h2,.ai-inner h3 { margin:0 0 8px; }
+.ai-inner p { color:var(--muted); }
+.ai-inner button,.ai-inner input,.ai-inner select,.ai-inner textarea { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius: var(--r-sm); padding:8px; }
+.ai-inner button { cursor:pointer; }
+.ai-inner button:hover { background:var(--hover); }
+.ai-inner button:disabled { opacity:.5; cursor:wait; }
+.ai-inner label { display:flex; flex-direction:column; gap:6px; margin:10px 0; min-width:0; }
+.ai-account,.ai-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.ai-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr)); gap:10px; }
+.ai-note { font-size:13px; }
+.ai-inner .ai-error { color:#d45b50; }
+.ai-preview article { border-top:1px solid var(--line); padding:12px 0; }
+.ai-preview { margin-top:22px; }
+.ai-visual { overflow:hidden; border:1px solid var(--line); border-radius: var(--r-md); margin:12px 0; background:#000; }
+.ai-visual svg { display:block; width:100%; height:auto; }

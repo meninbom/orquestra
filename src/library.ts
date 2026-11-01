@@ -6,6 +6,7 @@ import {
   transitions,
   initialBoard,
   fontFamilies,
+  repairBoard,
   uid,
   validBoard,
 } from "./model";
@@ -28,8 +29,14 @@ export type StyleProperties = Pick<
   | "bold"
   | "italic"
   | "textAlign"
+  | "verticalAlign"
+  | "textPaddingX"
+  | "textPaddingY"
   | "lineHeight"
+  | "autoFit"
   | "arrowStyle"
+  | "arrowLabelPosition"
+  | "arrowLabelFill"
 >;
 export type SavedStyle = { id: string; name: string; properties: StyleProperties };
 export type BoardTemplate = {
@@ -73,7 +80,8 @@ export function makeProject(title: string, template = false): Project {
 
 export function initialLibrary(legacy?: unknown): Library {
   const project = makeProject("Orquestração de agentes", true);
-  if (validBoard(legacy)) project.board = copy(legacy);
+  const board = repairBoard(legacy);
+  if (board) project.board = copy(board);
   return {
     format: "orquestra-library",
     version: 1,
@@ -134,6 +142,29 @@ export function validLibrary(value: unknown): value is Library {
   }
 }
 
+export function repairLibrary(value: unknown): Library | undefined {
+  if (validLibrary(value)) return value;
+  const library = value as Library;
+  if (!library || library.format !== "orquestra-library" || !Array.isArray(library.projects) || !library.projects.length) return undefined;
+  try {
+    for (const project of library.projects) {
+      if (!project) return undefined;
+      const board = repairBoard(project.board);
+      if (!board) return undefined;
+      project.board = board;
+    }
+    for (const template of library.templates ?? []) {
+      if (!template || !template.scene) return undefined;
+      const board = repairBoard({ version: 1, title: template.name, scenes: [template.scene] });
+      if (!board?.scenes[0]) return undefined;
+      template.scene = board.scenes[0];
+    }
+  } catch {
+    return undefined;
+  }
+  return validLibrary(library) ? library : undefined;
+}
+
 export function validateLibraryImport(library: Library, incoming: Library | Board): Library {
   return importProjects(library, incoming);
 }
@@ -150,8 +181,13 @@ export function validSavedStyle(value: unknown): value is SavedStyle {
     (style.properties.fontFamily === undefined || fontFamilies.includes(style.properties.fontFamily)) &&
     [style.properties.bold, style.properties.italic].every((v) => v === undefined || typeof v === "boolean") &&
     (style.properties.textAlign === undefined || ["left", "center", "right"].includes(style.properties.textAlign)) &&
+    (style.properties.verticalAlign === undefined || ["top", "center", "bottom"].includes(style.properties.verticalAlign)) &&
+    [style.properties.textPaddingX, style.properties.textPaddingY].every((v) => v === undefined || (Number.isFinite(v) && v >= 0 && v <= 200)) &&
     (style.properties.lineHeight === undefined || (Number.isFinite(style.properties.lineHeight) && style.properties.lineHeight >= 0.7 && style.properties.lineHeight <= 3)) &&
-    (style.properties.arrowStyle === undefined || ["solid", "dashed", "dotted"].includes(style.properties.arrowStyle));
+    (style.properties.autoFit === undefined || ["grow", "shrink", "fixed"].includes(style.properties.autoFit)) &&
+    (style.properties.arrowStyle === undefined || ["solid", "dashed", "dotted"].includes(style.properties.arrowStyle)) &&
+    (style.properties.arrowLabelPosition === undefined || (Number.isFinite(style.properties.arrowLabelPosition) && style.properties.arrowLabelPosition >= 0 && style.properties.arrowLabelPosition <= 1)) &&
+    (style.properties.arrowLabelFill === undefined || /^#[\da-f]{6}$/i.test(style.properties.arrowLabelFill));
 }
 
 export function cloneScene(scene: Scene): Scene {
@@ -218,13 +254,14 @@ export function importProjects(
   library: Library,
   incoming: Library | Board,
 ): Library {
-  const sourceProjects: Array<{ board: Board; styles?: SavedStyle[] }> = validLibrary(incoming)
-    ? incoming.projects
-    : validBoard(incoming)
-      ? [{ board: incoming }]
+  const normalized: Library | Board = repairLibrary(incoming) ?? repairBoard(incoming) ?? incoming;
+  const sourceProjects: Array<{ board: Board; styles?: SavedStyle[] }> = validLibrary(normalized)
+    ? normalized.projects
+    : validBoard(normalized)
+      ? [{ board: normalized }]
       : [];
-  if (!sourceProjects.length && (incoming as Library)?.format === "orquestra-library") {
-    const raw = incoming as Library;
+  if (!sourceProjects.length && (normalized as Library)?.format === "orquestra-library") {
+    const raw = normalized as Library;
     if (Array.isArray(raw.projects) && raw.projects.some((project) => (project?.styles?.length || 0) > 200))
       throw new Error("A importação contém um projeto com mais de 200 estilos.");
     if ((library.templates?.length || 0) + (raw.templates?.length || 0) > 200)
@@ -232,7 +269,7 @@ export function importProjects(
   }
   if (!sourceProjects.length)
     throw new Error("Arquivo de projeto ou biblioteca inválido.");
-  if ((library.templates?.length || 0) + (validLibrary(incoming) ? incoming.templates?.length || 0 : 0) > 200)
+  if ((library.templates?.length || 0) + (validLibrary(normalized) ? normalized.templates?.length || 0 : 0) > 200)
     throw new Error("A importação excede o limite de 200 modelos da biblioteca.");
   if (sourceProjects.some((project) => (project.styles?.length || 0) > 200))
     throw new Error("A importação contém um projeto com mais de 200 estilos.");
@@ -245,11 +282,11 @@ export function importProjects(
     ...library,
     activeId: projects[0].id,
     projects: [...library.projects, ...projects],
-    ...(validLibrary(incoming) && incoming.templates?.length
+    ...(validLibrary(normalized) && normalized.templates?.length
       ? {
           templates: [
             ...(library.templates || []),
-            ...incoming.templates.map((template) => ({
+            ...normalized.templates.map((template) => ({
               ...template,
               id: uid(),
               scene: cloneScene(template.scene),

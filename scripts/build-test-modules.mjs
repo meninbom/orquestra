@@ -27,6 +27,7 @@ await build({
 });
 
 for (const [entry, outfile] of [
+  ["src/penGeometry.ts", ".qa/pen-geometry.cjs"],
   ["src/groups.ts", ".qa/groups.cjs"],
   ["src/arrangement.ts", ".qa/arrangement.cjs"],
   ["src/styles.ts", ".qa/styles.cjs"],
@@ -39,6 +40,15 @@ for (const [entry, outfile] of [
   ["src/sceneBounds.ts", ".qa/scene-bounds.cjs"],
   ["src/svgExport.ts", ".qa/svg-export.cjs"],
   ["src/laserGeometry.ts", ".qa/laser-geometry.cjs"],
+  ["src/aiLayout.ts", ".qa/ai-layout.cjs"],
+  ["src/presenterProtocol.ts", ".qa/presenter-protocol.cjs"],
+  ["src/richText.ts", ".qa/rich-text.cjs"],
+  ["src/richLayout.ts", ".qa/rich-layout.cjs"],
+  ["src/richCaret.ts", ".qa/rich-caret.cjs"],
+  ["src/textToolbarPlacement.ts", ".qa/text-toolbar-placement.cjs"],
+  ["src/richSelection.ts", ".qa/rich-selection.cjs"],
+  ["src/projectSearch.ts", ".qa/project-search.cjs"],
+  ["src/itemAppearance.ts", ".qa/item-appearance.cjs"],
 ]) {
   await build({ entryPoints: [entry], bundle: true, platform: "node", format: "cjs", outfile, target: "node22" });
 }

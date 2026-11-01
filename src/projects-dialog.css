@@ -1,0 +1,34 @@
+/* Scoped refinements for the project library. */
+.projects-dialog .projects-heading { padding: 24px 28px 20px; }
+.projects-dialog .projects-heading h2 { margin: 9px 0 6px; font-size: 25px; }
+.projects-dialog .projects-main { padding: 20px 24px; }
+.projects-dialog .projects-create { padding: 22px; }
+.projects-dialog .projects-create h3 { margin: 10px 0 18px; }
+.projects-dialog .projects-search:focus-within { border-color: var(--mint); }
+.projects-dialog .projects-search button { font-size: 11px; }
+.projects-dialog .projects-result-count { margin: 12px 1px 0; color: var(--muted); font-size: 11px; }
+.projects-dialog .project-list { margin: 10px 0 16px; }
+.projects-dialog .project-row { border-radius: var(--r-md); }
+.projects-dialog .project-row.selected { border-color: var(--mint); background: var(--active); }
+.projects-dialog .project-open strong { font-size: 13px; }
+.projects-dialog .project-open small { font-size: var(--fs-xs); line-height: 1.5; }
+.projects-dialog .project-row > .icon-button { width: 32px; height: 32px; }
+.projects-dialog .projects-empty button { color: var(--mint); font-size: 11px; text-decoration: underline; text-underline-offset: 3px; }
+.projects-dialog .merge-box { padding: 13px; }
+.projects-dialog .merge-box small { font-size: 11px; }
+.projects-dialog .merge-actions button:disabled { opacity: .55; }
+.projects-dialog .project-options { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 15px; }
+.projects-dialog .project-options summary { cursor: pointer; color: var(--text); font-size: 11px; line-height: 1.5; }
+.projects-dialog .project-options .project-transition { margin-top: 14px; padding-top: 0; border-top: 0; }
+.projects-dialog .project-storage { margin-top: 20px; padding-top: 18px; }
+.projects-dialog :is(button, input, select, summary):focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+.projects-dialog .delete-project { color: var(--muted); }
+.projects-dialog .delete-project:hover, .projects-dialog .delete-project:focus-visible { color: var(--danger); }
+@media (max-width: 700px) {
+  .projects-dialog .project-storage { display: block; }
+  .projects-dialog .projects-heading { padding: 18px; }
+  .projects-dialog .projects-main, .projects-dialog .projects-create { padding: 18px; }
+  .projects-dialog .project-open small { font-size: var(--fs-xs); }
+}
+
+.projects-dialog .projects-selection-help { margin: 12px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }

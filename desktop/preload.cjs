@@ -1,5 +1,13 @@
 const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("orquestraDesktop", {
+  aiStatus: () => ipcRenderer.invoke("ai:status"),
+  aiModels: () => ipcRenderer.invoke("ai:models"),
+  aiLogin: () => ipcRenderer.invoke("ai:login"),
+  aiCancelLogin: () => ipcRenderer.invoke("ai:cancel-login"),
+  aiLogout: () => ipcRenderer.invoke("ai:logout"),
+  aiGenerate: (prompt, model, pages) => ipcRenderer.invoke("ai:generate", prompt, model, pages),
+  aiCancel: () => ipcRenderer.invoke("ai:cancel"),
+  removeNewAsset: (id) => ipcRenderer.invoke("asset:remove-new", id),
   putAsset: (value) => ipcRenderer.invoke("asset:put", value),
   getAsset: (id) => ipcRenderer.invoke("asset:get", id),
   openLink: (url) => ipcRenderer.invoke("link:open", url),
@@ -52,4 +60,18 @@ contextBridge.exposeInMainWorld("orquestraPresenter", {
     return () => ipcRenderer.removeListener("presenter:command", listener);
   },
   command: (command) => { if (isAudience && ["next", "previous", "stop"].includes(command)) ipcRenderer.send("presenter:command", command); },
+});
+const isOperator = location.hash === "#operator";
+const operatorSubscription = (channel, callback) => { const listener = (_event, value) => callback(value); ipcRenderer.on(channel, listener); return () => ipcRenderer.removeListener(channel, listener); };
+contextBridge.exposeInMainWorld("orquestraOperator", {
+  isOperator,
+  open: () => ipcRenderer.invoke("operator:open"),
+  close: () => ipcRenderer.invoke("operator:close"),
+  publish: state => ipcRenderer.invoke("operator:publish", state),
+  onState: callback => { const unsubscribe = operatorSubscription("operator:state", callback); if (isOperator) ipcRenderer.send("operator:ready"); return unsubscribe; },
+  onClosed: callback => operatorSubscription("operator:closed", callback),
+  onCommand: callback => operatorSubscription("operator:command", callback),
+  command: command => { if (isOperator) ipcRenderer.send("operator:command", command); },
+  minimize: () => ipcRenderer.invoke("operator:minimize"),
+  setExpanded: expanded => ipcRenderer.invoke("operator:expanded", expanded),
 });

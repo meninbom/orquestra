@@ -1,7 +1,9 @@
+import { penPath, penWidthOf, penOpacityOf } from "./penGeometry";
 import { type Scene, type Item, colors } from "./model";
-import { arrowGeometry, frameTitleHeight } from "./selection";
+import { arrowGeometry, pointAlongPath } from "./selection";
 import { iconByName } from "./icons";
-import { wrapItemText } from "./textLayout";
+import { textRender, frameTitleHeightOf } from "./itemTextMetrics"; import { type ItemTextPlacement } from "./textLayout";
+import { RichTextVisual } from "./RichTextVisual";
 import { sceneHeadingLayout, sceneHeadingLineHeight, sceneHeadingText, sceneHeadingUnderlinePath, sceneSubtitleUnderlinePath, wrapHeadingText } from "./sectionHeadingLayout";
 import { measureHeadingWidth } from "./headingMetrics";
 import { sceneRenderBounds } from "./sceneBounds";
@@ -23,24 +25,25 @@ const measureText = (text: string, font: string) => {
 const mappedColor = mapPaletteColor;
 const markerId = (color: string) => `arrow-${[...color].map((character) => character.codePointAt(0)!.toString(16)).join("-")}`;
 
-type Props = { scene: Scene; index: number; light: boolean; images: Record<string, string>; embeddedFonts: string; animated?: boolean };
-export function StaticScene({ scene, index, light, images, embeddedFonts, animated = false }: Props) {
+type Props = { scene: Scene; index: number; light: boolean; images: Record<string, string>; embeddedFonts: string; animated?: boolean; onOpenLink?: (url: string) => void };
+export function StaticScene({ scene, index, light, images, embeddedFonts, animated = false, onOpenLink }: Props) {
   const visible = scene.items.filter((item) => !item.hidden && !(item.type === "arrow" && scene.items.some((target) => target.hidden && (target.id === item.from || target.id === item.to))));
   const bounds = sceneRenderBounds(scene, index);
   const { x: minX, y: minY, w: frameWidth, h: frameHeight } = bounds;
   const bg = light ? "#f4f7f3" : "#000000";
   const drawItem = (item: Item) => {
     const color = mappedColor(item.color, light);
-    const family = fontStacks[item.fontFamily || "Caveat"];
-    const lines = wrapItemText(item, measureText, family);
-    const path = item.type === "arrow" ? arrowGeometry(item, scene.items).path : "";
+    const family = fontStacks[item.fontFamily || (item.type === "frame" ? "DM Sans" : "Caveat")];
+    const render = textRender(item, measureText);
+    const geometry = item.type === "arrow" ? arrowGeometry(item, scene.items) : null;
+    const path = geometry?.path || "";
     const Icon = iconByName(item.icon);
     if (item.type === "arrow") return (
       <g key={item.id} data-item={item.id}>
-        <ArrowVisual item={item} path={path} color={color} animated={animated} markerId={markerId(item.color)} />
+        <ArrowVisual item={item} path={path} labelPoint={geometry ? pointAlongPath(geometry.points, item.arrowLabelPosition ?? 0.5) : undefined} color={color} animated={animated} markerId={markerId(item.color)} interactiveLinks={Boolean(onOpenLink)} onOpenLink={onOpenLink} />
       </g>
     );
-    if (item.type === "pen") return <g key={item.id} data-item={item.id}><polyline points={item.points?.map((p) => `${item.x + p[0]},${item.y + p[1]}`).join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></g>;
+    if (item.type === "pen") return <g key={item.id} data-item={item.id}><path data-pen-stroke="true" d={penPath(item)} fill="none" stroke={color} strokeWidth={penWidthOf(item)} opacity={penOpacityOf(item)} strokeLinecap="round" strokeLinejoin="round" /></g>;
     if (item.type === "icon") return <g key={item.id} data-item={item.id}><Icon x={item.x} y={item.y} width={item.w} height={item.h} color={color} strokeWidth={1.6} /></g>;
     if (item.type === "image") {
       const image = images[item.assetId || ""];
@@ -48,19 +51,10 @@ export function StaticScene({ scene, index, light, images, embeddedFonts, animat
     }
     if (item.type === "file" && images[`pdf:${item.assetId}:${item.pdfPage || 1}`]) return <g key={item.id} data-item={item.id}><rect x={item.x} y={item.y} width={item.w} height={item.h} fill="#fff" /><image data-pdf-preview={item.assetId} x={item.x} y={item.y} width={item.w} height={item.h} href={images[`pdf:${item.assetId}:${item.pdfPage || 1}`]} preserveAspectRatio="xMidYMid meet" /></g>;
     if (["video", "audio", "file", "link"].includes(item.type)) return staticCard(item, color, light);
-    const align = item.textAlign || (["agent", "text", "note"].includes(item.type) ? "left" : "center");
-    const anchor = align === "center" ? "middle" : align === "right" ? "end" : "start";
-    const left = item.type === "agent" ? item.x + 72 : item.x + 16;
-    const right = item.x + item.w - 16;
-    const center = item.type === "agent"
-      ? item.x + 72 + (item.w - 94) / 2
-      : item.x + item.w / 2 + (item.type === "rect" && item.color === colors[1] ? 14 : 0);
-    const x = align === "center" ? center : anchor === "end" ? right : left;
-    const lineHeight = item.lineHeight ?? 1.1;
-    const rowSpacing = item.size * lineHeight;
-    const y = item.type === "agent" ? item.y + 42 : item.type === "text" ? item.y + 30 : item.type === "note" ? item.y + 38 : item.y + item.h / 2 - (lines.length - 1) * rowSpacing / 2 + 8;
+    const placement = render.placement as ItemTextPlacement;
     const fontWeight = item.bold ? 700 : 500;
     const fontStyle = item.italic ? "italic" : "normal";
+    const titleHeight = frameTitleHeightOf(item, measureText);
     const agentIcon = item.text.startsWith("Pesquisador")
       ? <><circle cx="12" cy="12" r="11" /><path d="m20 20 10 10" /></>
       : item.text.startsWith("Desenvolvedor")
@@ -75,14 +69,18 @@ export function StaticScene({ scene, index, light, images, embeddedFonts, animat
         {item.type === "agent" && <g transform={`translate(${item.x + 24},${item.y + 28})`} stroke={color} strokeWidth="1.7" fill="none">{item.icon ? <Icon x={0} y={0} width={32} height={32} color={color} strokeWidth={1.7} /> : agentIcon}</g>}
         {item.type === "rect" && item.text && item.color === colors[1] && <g transform={`translate(${item.x + 22},${item.y + 22})`} fill="none" stroke={color} strokeWidth="2"><path d="M0 32V0c13-7 18 8 31 0v21c-13 8-18-7-31 0" /></g>}
         {item.type === "frame" && item.text && <g data-frame-title="true">
-          <rect x={item.x + 8} y={item.y - frameTitleHeight(item)} width={Math.max(0, item.w - 16)} height={frameTitleHeight(item)} fill={light ? "#f4f7f3" : "#000000"} />
-          <text x={item.x + 14} y={item.y - frameTitleHeight(item) + item.size + 3} fill={resolveItemTextColor({ ...item, fill: "transparent" }, light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
-            {lines.map((line, n) => <tspan key={n} x={item.x + 14} dy={n ? item.size * lineHeight : 0}>{line}</tspan>)}
-          </text>
+          <rect x={item.x + 8} y={item.y - titleHeight} width={Math.max(0, item.w - 16)} height={titleHeight} fill={light ? "#f4f7f3" : "#000000"} />
+          {render.rich
+            ? <RichTextVisual lines={render.layout!.lines} lineSteps={render.layout!.lineSteps} baseY={render.placement.baseY} color={resolveItemTextColor({ ...item, fill: "transparent" }, light)} fontFamily={family} mapColor={(value) => mappedColor(value, light)} />
+            : <text x={placement.x} y={placement.baseY} textAnchor={placement.anchor} fill={resolveItemTextColor({ ...item, fill: "transparent" }, light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
+                {render.lines.map((line, n) => <tspan key={n} x={placement.x} dy={n ? placement.lineSteps[n] : 0}>{line}</tspan>)}
+              </text>}
         </g>}
-        {item.type !== "frame" && <text x={x} y={y} textAnchor={anchor} fill={resolveItemTextColor(item, light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
-          {lines.map((line, n) => <tspan key={n} x={x} dy={n ? item.size * (item.type === "agent" ? 0.72 : 1) * lineHeight : 0} fontSize={item.type === "agent" && n ? item.size * 0.72 : undefined} fontWeight={fontWeight} fontStyle={fontStyle}>{line}</tspan>)}
-        </text>}
+        {item.type !== "frame" && (render.rich
+          ? <RichTextVisual lines={render.layout!.lines} lineSteps={render.layout!.lineSteps} baseY={render.placement.baseY} color={resolveItemTextColor(item, light)} fontFamily={family} mapColor={(value) => mappedColor(value, light)} interactiveLinks={Boolean(onOpenLink)} onOpenLink={onOpenLink} />
+          : <text x={placement.x} y={placement.baseY} textAnchor={placement.anchor} fill={resolveItemTextColor(item, light)} fontFamily={family} fontSize={item.size} fontWeight={fontWeight} fontStyle={fontStyle}>
+              {render.lines.map((line, n) => <tspan key={n} x={placement.x} dy={placement.lineSteps[n]} fontSize={item.type === "agent" && n ? item.size * 0.72 : undefined} fontWeight={fontWeight} fontStyle={fontStyle}>{line}</tspan>)}
+            </text>)}
       </g>
     );
   };

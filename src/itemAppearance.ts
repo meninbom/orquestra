@@ -64,3 +64,14 @@ export function resolveItemTextColor(item: Item, light: boolean): string {
   const neutral = luminance(parseHex(backdrop)!) > 0.35 ? "#14251d" : "#e2e9e2";
   return contrast(neutral, backdrop) > contrast(mapped, backdrop) ? neutral : mapped;
 }
+
+/**
+ * The text color a viewer actually sees, per surface. Arrow labels are painted
+ * over their own dark plate; frame titles ignore the frame fill behind them.
+ */
+export function renderedItemTextColor(item: Item, light: boolean): string {
+  if (item.textColor !== undefined) return item.textColor;
+  if (item.type === "arrow") return "#ffffff";
+  if (item.type === "frame") return resolveItemTextColor({ ...item, fill: "transparent" }, light);
+  return resolveItemTextColor(item, light);
+}

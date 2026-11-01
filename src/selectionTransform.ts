@@ -1,7 +1,9 @@
 import { type Item } from "./model";
 import { editableSelection, expandGroupIds } from "./groups";
 import { arrowGeometry, itemBounds, selectionBounds, type Bounds, type Point } from "./selection";
-import { autoHeightFor, wrapItemText } from "./textLayout";
+import { autoFitMode, autoHeightFor, fitFontSizeToHeight, wrapItemText } from "./textLayout";
+import { hasItemRichText, hasRichText, scaleRichFontSizes } from "./richText";
+import { layoutRichText, richAutoHeight, richFitFontSize } from "./richLayout";
 
 export type SelectionResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 export type SelectionMeasureText = (text: string, font: string) => number;
@@ -89,20 +91,32 @@ export function transformSelectionToBounds(
     if (item.type === "pen") {
       return { ...item, x, y, w, h, points: item.points?.map(([px, py]) => [px * sx, py * sy]) };
     }
-    const size = scaleTypography ? Math.max(10, Math.min(100, item.size * sx)) : item.size;
+    let size = scaleTypography ? Math.max(10, Math.min(100, item.size * sx)) : item.size;
     let autoHeight = item.autoHeight;
+    let autoFit = item.autoFit;
     let finalHeight = h;
-    if (item.autoHeight && (Math.abs(sx - 1) > 1e-8 || Math.abs(sy - 1) > 1e-8)) {
+    const mode = autoFitMode(item);
+    const rich = hasItemRichText(item);
+    if (mode === "grow" && (Math.abs(sx - 1) > 1e-8 || Math.abs(sy - 1) > 1e-8)) {
       if (Math.abs(sy - 1) < 1e-8 && Math.abs(sx - 1) > 1e-8) {
         const resized = { ...item, x, y, w, h, size };
-        finalHeight = autoHeightFor(resized, wrapItemText(resized, measureText, fontStacks[item.fontFamily || "Caveat"]).length);
+        finalHeight = rich
+          ? richAutoHeight(resized, layoutRichText(resized, measureText))
+          : autoHeightFor(resized, wrapItemText(resized, measureText, fontStacks[item.fontFamily || (item.type === "frame" ? "DM Sans" : "Caveat")]).length);
       } else {
         // A vertical or proportional transform establishes a deliberate height;
         // future text edits must not silently undo the collective resize.
         autoHeight = false;
+        if (item.autoFit !== undefined) autoFit = "fixed";
       }
+    } else if (mode === "shrink" && (Math.abs(sx - 1) > 1e-8 || Math.abs(sy - 1) > 1e-8)) {
+      const resized = { ...item, x, y, w, h, size };
+      size = rich
+        ? richFitFontSize(resized, measureText, item.type === "frame" ? "DM Sans" : "Caveat")
+        : fitFontSizeToHeight(resized, measureText, fontStacks[item.fontFamily || (item.type === "frame" ? "DM Sans" : "Caveat")]);
     }
-    return { ...item, x, y, w, h: finalHeight, size, ...(item.autoHeight !== undefined ? { autoHeight } : {}) };
+    const scaled = item.rich ? scaleRichFontSizes(item.rich, size / Math.max(1, item.size)) : undefined;
+    return { ...item, x, y, w, h: finalHeight, size, ...(item.rich ? { rich: hasRichText(scaled) ? scaled : undefined } : {}), ...(item.autoHeight !== undefined ? { autoHeight } : {}), ...(item.autoFit !== undefined ? { autoFit } : {}) };
   });
   const nextById = new Map(next.map((item) => [item.id, item]));
   return next.map((item) => {

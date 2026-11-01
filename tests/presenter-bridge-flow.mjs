@@ -77,6 +77,8 @@ async function testAudienceMedia({ cdp, run, mainRun, waitFor, profile, audience
   await cdp("Page.reload");
   await waitFor(() => run('!window.__presenterReload&&!!document.querySelector(".present-button")'), "media fixture reload");
   await run('document.querySelector(".present-button").click();true');
+  if(await run('!!window.orquestraOperator')){await waitFor(()=>run('!!document.querySelector(".operator-return")'),'default operator opens');await run('window.orquestraOperator.close()');await waitFor(()=>run('!!document.querySelector(".presenter-panel")'),'inline console restored');}
+  await run(`(()=>{document.querySelector('.presenter-panel.minimized [aria-label="Expandir console do apresentador"]')?.click();document.querySelector('.presenter-tools-toggle[aria-expanded="false"]')?.click();return true})()`);await delay(100);
   await run('[...document.querySelectorAll(".presenter-panel button")].find(b=>b.textContent.includes("Abrir tela do público")).click();true');
   await waitFor(() => audience('document.querySelector("audio")?.readyState>=2&&document.querySelector("video")?.readyState>=2'), "audience decodes MP3 and MP4", 25000);
   await waitFor(() => audience('!!document.querySelector("[data-pdf-preview-page]")'), "PDF rendered in audience", 25000).catch(async (error) => { console.log("Audience PDF:", await audience('({text:document.querySelector("#root")?.textContent,images:[...document.querySelectorAll("image")].map(e=>({attrs:[...e.attributes].map(a=>[a.name,a.name==="href"?a.value.slice(0,45):a.value])}))})')); throw error; });
@@ -107,8 +109,8 @@ async function testAudienceMedia({ cdp, run, mainRun, waitFor, profile, audience
 }
 
 async function testPresenterUI({ cdp, run, mainRun, waitFor, audience, profile }) {
-  const click = async (selector) => { await run(`document.querySelector(${JSON.stringify(selector)}).click();true`); await delay(120); };
-  const panelButton = async (text) => { await run(`[...document.querySelectorAll('.presenter-panel button')].find(b=>b.textContent.includes(${JSON.stringify(text)})).click();true`); await delay(120); };
+  const click = async (selector) => { if(selector!=='.present-button') await run(`document.querySelector('.presenter-panel.minimized [aria-label="Expandir console do apresentador"]')?.click();true`); await run(`document.querySelector(${JSON.stringify(selector)}).click();true`); await delay(120); if(selector===".present-button"&&await run("!!window.orquestraOperator")){await waitFor(()=>run("!!document.querySelector(\".operator-return\")"),"default operator opens");await run("window.orquestraOperator.close()");await waitFor(()=>run("!!document.querySelector(\".presenter-panel\")"),"inline console restored");} };
+  const panelButton = async (text) => { await run(`(()=>{document.querySelector('.presenter-panel.minimized [aria-label="Expandir console do apresentador"]')?.click();const toggle=document.querySelector('.presenter-tools-toggle[aria-expanded="false"]');if(toggle)toggle.click();return true})()`);await delay(100); await run(`[...document.querySelectorAll('.presenter-panel button')].find(b=>b.textContent.includes(${JSON.stringify(text)})).click();true`); await delay(120); };
   const library = await run('window.orquestraDesktop.loadLibrary()');
   const project = library.projects.find(p => p.id === library.activeId);
   const base = { id: crypto.randomUUID(), type: "rect", x: 100, y: 160, w: 250, h: 90, text: "Conteúdo público QA", color: "#ededed", fill: "transparent", size: 24, step: 0, animation: "none" };
@@ -162,8 +164,8 @@ async function testPresenterUI({ cdp, run, mainRun, waitFor, audience, profile }
   await writeFile(".qa/presenter-audience.png", Buffer.from(publicImage, "base64"));
   await mainRun("process.mainModule.require('electron').BrowserWindow.getAllWindows().find(w=>!w.webContents.getURL().includes('audience')).setSize(800,600)");
   await delay(250);
-  const compact = await run('(()=>{const p=document.querySelector(".presenter-panel").getBoundingClientRect();return {top:p.top,bottom:p.bottom,height:innerHeight,canvasHeight:document.querySelector(".canvas").clientHeight,overflow:document.documentElement.scrollWidth>innerWidth}})()');
-  assert.ok(compact.top>=66&&compact.bottom<=compact.height&&compact.canvasHeight>100);assert.equal(compact.overflow,false);
+  const compact = await run('(()=>{const p=document.querySelector(".presenter-panel").getBoundingClientRect();return {top:p.top,right:p.right,width:innerWidth,bottom:p.bottom,height:innerHeight,canvasHeight:document.querySelector(".canvas").clientHeight,overflow:document.documentElement.scrollWidth>innerWidth}})()');
+  assert.ok((compact.top>=66||compact.right<=compact.width-150)&&compact.bottom<=compact.height&&compact.canvasHeight>100);assert.equal(compact.overflow,false);
   await writeFile(".qa/presenter-compact.png",Buffer.from((await cdp("Page.captureScreenshot",{format:"png"})).data,"base64"));
   await panelButton("Sair da apresentação");
   await waitFor(() => run('!document.querySelector(".presenter-panel")'), "return to editor");

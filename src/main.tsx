@@ -1,3 +1,4 @@
+import { penPath, penWidthOf, penOpacityOf, appendPenSamples } from "./penGeometry";
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -44,6 +45,8 @@ import {
   BringToFront,
   SendToBack,
   Layers,
+  Sparkles,
+  Search,
 } from "lucide-react";
 import {
   type Board,
@@ -86,6 +89,9 @@ import {
 } from "./media";
 import { readLibrary, writeLibrary } from "./persistence";
 import { ProjectManager } from "./ProjectManager";
+import { AiDialog } from "./AiDialog";
+import { outlineToBoard, type AiOutline, type AiLayout } from "./aiLayout";
+import { makeProject } from "./library";
 import {
   type Bounds,
   type SelectionMode,
@@ -98,6 +104,7 @@ import {
   portAnchor,
   portForDirection,
   reconnectArrowEndpoint,
+  pointAlongPath,
   itemsInArea,
   combineSelection,
   selectionBounds,
@@ -109,7 +116,31 @@ import { editableSelection, expandGroupIds, groupItems, itemSelection, setItemHi
 import { alignItems, distributeItems, snapPoint, type Alignment, type Distribution, type Guide } from "./arrangement";
 import { applySavedStyle, styleProperties } from "./styles";
 import { builtInTemplates, insertTemplateScene, saveSceneAsTemplate } from "./templates";
-import { autoHeightFor, wrapItemText } from "./textLayout";
+import { type ItemTextPlacement, arrowFontStack, autoFitMode, defaultVerticalAlignment, itemTextAlign, itemTextOverflow, textBlockHeight, textPaddingX, textPaddingY, wrapItemText } from "./textLayout";
+import { arrowLabelFor, autoHeightOf, fittedArrowSize, fittedTextSize, frameTitleHeightOf, plainLines, textRender } from "./itemTextMetrics";
+import {
+  type RichStyleKey,
+  applyPreset,
+  applyRichStyle,
+  blockAt,
+  clearRichStyle,
+  hasRichText,
+  normalizeRich,
+  paragraphIndexesForRange,
+  remapRich,
+  richToClipboardHtml,
+  scaleRichFontSizes,
+  setBlocks,
+  toggleRichProperty,
+  typographyPresetLabels,
+} from "./richText";
+import { RichTextVisual } from "./RichTextVisual";
+import { CanvasTextEditor } from "./CanvasTextEditor";
+import { RichFormatControls } from "./RichFormatControls";
+import { stateForItems } from "./richSelection";
+import { SearchReplace } from "./SearchReplace";
+import type { SearchMatch } from "./projectSearch";
+import { measureHeadingWidth } from "./headingMetrics";
 import { makeProjectVersion, type ProjectVersion, validProjectVersion } from "./versions";
 import { connectionPortAt, connectionPortTargets as getConnectionPortTargets } from "./connectionTargets";
 import { canTransformSelection, resizeSelectionFromSnapshot, resizeSelectionToAxisBounds, type SelectionResizeHandle } from "./selectionTransform";
@@ -123,13 +154,17 @@ import { LayerPanel } from "./LayerPanel";
 import { ConfirmDialog, NameDialog } from "./ActionDialog";
 import { ModalDialog, isModalDialogOpen } from "./ModalDialog";
 import { SectionTemplateDialog } from "./SectionTemplateDialog";
-import { resolveItemTextColor } from "./itemAppearance";
+import { renderedItemTextColor, resolveItemTextColor } from "./itemAppearance";
 import { renderWindowBounds, visibleRenderItemIds } from "./renderWindow";
 import { PresenterPanel } from "./PresenterPanel";
+import { OperatorView } from "./OperatorView";
+import type { OperatorState } from "./operatorProtocol";
+import "./operator-integration.css";
 import { AudienceView } from "./AudienceView";
 import { LaserTrail, type LaserTrailHandle } from "./LaserTrail";
 import type { PresenterState } from "./presenterProtocol";
 import "./style.css";
+import "./rich-text.css";
 import "./presenter.css";
 
 const tools: { id: Tool; label: string; key: string; icon: typeof Square }[] = [
@@ -184,22 +219,36 @@ const fontGroups: { label: string; families: NonNullable<Item["fontFamily"]>[] }
   { label: "Destaque", families: ["Impact"] },
 ];
 const itemTextColor = (i: Item) => i.textColor ?? (i.type === "note" ? "#19342a" : i.color);
+const MIXED = "mixed" as const;
+type MixedValue<T> = T | typeof MIXED;
+function commonValue<T>(items: Item[], read: (item: Item) => T): MixedValue<T> {
+  if (!items.length) return MIXED;
+  const first = read(items[0]);
+  return items.every((item) => read(item) === first) ? first : MIXED;
+}
+const measureText = (text: string, font: string) => {
+  measure.font = font;
+  return measure.measureText(text).width;
+};
 function wrapText(i: Item): string[] {
-  return wrapItemText(
-    i,
-    (text, font) => {
-      measure.font = font;
-      return measure.measureText(text).width;
-    },
-    fontStacks[i.fontFamily || "Caveat"],
-  );
+  return plainLines(i, measureText);
+}
+function withScaledRich(item: Item, size: number): Item {
+  if (!item.rich) return { ...item, size };
+  const scaled = scaleRichFontSizes(item.rich, size / Math.max(1, item.size));
+  return { ...item, size, rich: hasRichText(scaled) ? scaled : undefined };
 }
 function withAutoHeight(item: Item, values: Partial<Item>): Item {
   const next = { ...item, ...values };
-  const layoutChanged = ["text", "size", "bold", "italic", "fontFamily", "lineHeight", "autoHeight"].some((key) => key in values);
-  return next.autoHeight && layoutChanged
-    ? { ...next, h: autoHeightFor(next, wrapText(next).length) }
-    : next;
+  const layoutChanged = ["text", "rich", "size", "bold", "italic", "fontFamily", "lineHeight", "autoHeight", "autoFit", "textPaddingX", "textPaddingY", "w", "h"].some((key) => key in values);
+  if (!layoutChanged) return next;
+  const mode = autoFitMode(next);
+  if (mode === "grow") return next.type === "arrow" ? { ...next, autoHeight: true } : { ...next, h: autoHeightOf(next, measureText), autoHeight: true };
+  if (mode === "shrink") {
+    if (next.type === "arrow") return { ...withScaledRich(next, fittedArrowSize(next, measureText)), autoHeight: false };
+    return { ...withScaledRich(next, fittedTextSize(next, measureText)), autoHeight: false };
+  }
+  return next;
 }
 
 type ConnectorPreview =
@@ -230,7 +279,9 @@ function App({ initial }: { initial: Library }) {
       ),
     }));
   }, []);
+  const [penOptions, setPenOptions] = useState({ penWidth: 2.5, penOpacity: 1, penSmooth: true });
   const [projectsOpen, setProjectsOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const [nameDialog, setNameDialog] = useState<{ kind: "style" | "template"; value: string } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ title: string; description: string; confirmLabel?: string; action: () => void } | null>(null);
   const [versionProjectId, setVersionProjectId] = useState<string | null>(null);
@@ -241,8 +292,9 @@ function App({ initial }: { initial: Library }) {
   const [connectionEdit, setConnectionEdit] = useState<{ arrowId: string; endpoint: "from" | "to" } | null>(null);
   const [hoveredConnectorItem, setHoveredConnectorItem] = useState<string | null>(null);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
-  const [pdfPreview, setPdfPreview] = useState<{ assetId: string; name: string } | null>(null);
+  const [pdfPreview, setPdfPreview] = useState<{ assetId: string; name: string; page?: number } | null>(null);
   const [linkPreview, setLinkPreview] = useState<{ url: string; title: string } | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [youtubePlaybackIds, setYoutubePlaybackIds] = useState<string[]>([]);
   const startYoutube = (id: string) => setYoutubePlaybackIds((ids) => ids.includes(id) ? ids : [...ids, id]);
   const stopYoutube = (id: string) => setYoutubePlaybackIds((ids) => ids.filter((playingId) => playingId !== id));
@@ -274,6 +326,8 @@ function App({ initial }: { initial: Library }) {
     [presenterFullscreen, setPresenterFullscreen] = useState(false),
     [laserEnabled, setLaserEnabled] = useState(false),
     [presenterMinimized, setPresenterMinimized] = useState(false),
+    [operatorOpen, setOperatorOpen] = useState(false),
+    [operatorTimer, setOperatorTimer] = useState({ elapsedMs: 0, startedAt: null as number | null }),
     laserTrail = useRef<LaserTrailHandle>(null),
     presenterWasFullscreen = useRef(false),
     [help, setHelp] = useState(false),
@@ -321,9 +375,16 @@ function App({ initial }: { initial: Library }) {
     lastCreatedAt: Date.now(),
   });
   boardRef.current = board;
-  const [, fontsLoaded] = useState(false);
+  const [fontVersion, fontsLoaded] = useState(0);
   useEffect(() => {
-    document.fonts.ready.then(() => fontsLoaded(true));
+    // Canvas measurement does not trigger @font-face loads, so request the board fonts
+    // explicitly and re-measure whenever any face finishes loading.
+    const remeasure = () => fontsLoaded((version) => version + 1);
+    Promise.all(["400 16px Caveat", "700 16px Caveat", '400 16px "DM Sans"', '700 16px "DM Sans"'].map((font) => document.fonts.load(font).catch(() => [])))
+      .then(() => document.fonts.ready)
+      .then(remeasure);
+    document.fonts.addEventListener("loadingdone", remeasure);
+    return () => document.fonts.removeEventListener("loadingdone", remeasure);
   }, []);
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -606,6 +667,12 @@ function App({ initial }: { initial: Library }) {
     if (!editableSelection(scene.items, [id]).includes(id)) return;
     updateScene((s) => ({ ...s, items: s.items.map((item) => item.id === id ? withAutoHeight(item, values) : item) }));
   };
+  const changeItemText = (id: string, text: string) => {
+    const item = scene.items.find((candidate) => candidate.id === id);
+    if (!item || !editableSelection(scene.items, [id]).includes(id)) return;
+    const rich = remapRich(item.text, text, item.rich);
+    patchItem(id, { text, rich: hasRichText(rich) ? rich : undefined });
+  };
   const updateBorderColor = (value: string) => {
     setColor(value);
     const eligible = new Set(editableSelection(scene.items, selected));
@@ -613,9 +680,26 @@ function App({ initial }: { initial: Library }) {
       ...s,
       items: s.items.map((i) =>
         eligible.has(i.id)
-          ? { ...i, color: value, textColor: itemTextColor(i) }
+          ? { ...i, color: value, textColor: renderedItemTextColor(i, light) }
           : i,
       ),
+    }));
+  };
+  /** The size slider is a base scale: explicit run/preset sizes follow the same factor. */
+  const resizeSelectedFontSize = (value: number) => {
+    const nextSize = Math.max(8, Math.min(400, Math.round(value)));
+    if (!Number.isFinite(nextSize)) return;
+    const eligible = new Set(editableSelection(scene.items, selected));
+    updateScene((s) => ({
+      ...s,
+      items: s.items.map((i) => {
+        if (!eligible.has(i.id)) return i;
+        const scaled = i.rich ? scaleRichFontSizes(i.rich, nextSize / Math.max(1, i.size)) : undefined;
+        return withAutoHeight(i, {
+          size: nextSize,
+          ...(i.rich ? { rich: hasRichText(scaled) ? scaled : undefined } : {}),
+        });
+      }),
     }));
   };
   const undo = () => {
@@ -769,6 +853,49 @@ function App({ initial }: { initial: Library }) {
     );
     return () => clearTimeout(t);
   }, [playing, present, step, scene.id, index, scene.duration]);
+  const operatorSnapshot = useMemo<OperatorState>(() => ({
+    scenes: board.scenes.map(({ id, name }) => ({ id, name: name.slice(0, 1000) })),
+    index, step, maxStep, playing, audience: audienceOpen, fullscreen: presenterFullscreen,
+    laser: laserEnabled, notes: scene.presenterNotes, light, timer: operatorTimer,
+  }), [board.scenes, index, step, maxStep, playing, audienceOpen, presenterFullscreen, laserEnabled, scene.presenterNotes, light, operatorTimer]);
+  const operatorPublishError = useRef(false);
+  useEffect(() => {
+    if (!operatorOpen || !present || !window.orquestraOperator) return;
+    void window.orquestraOperator.publish(operatorSnapshot).then(() => { operatorPublishError.current = false; }).catch(() => {
+      if (!operatorPublishError.current) { operatorPublishError.current = true; notify("Não foi possível atualizar o console separado."); }
+    });
+  }, [operatorOpen, present, operatorSnapshot]);
+  useEffect(() => {
+    const api = window.orquestraOperator;
+    if (!api) return;
+    const offClose = api.onClosed(() => { setOperatorOpen(false); setPresenterMinimized(true); });
+    const offCommand = api.onCommand((command) => {
+      if (!present) return;
+      switch (command.type) {
+        case "next": advance(); break;
+        case "previous": previousPresentation(); break;
+        case "togglePlay": setPlaying(value => !value); break;
+        case "stop": stopPresentation(); break;
+        case "openAudience": void openAudience(); break;
+        case "closeAudience": void window.orquestraPresenter?.closeAudience().catch(() => notify("Não foi possível fechar a tela do público.")); break;
+        case "toggleFullscreen": void togglePresenterFullscreen(); break;
+        case "toggleLaser": clearLaser(); setLaserEnabled(value => !value); break;
+        case "select": go(command.index); break;
+        case "timer": setOperatorTimer(command.timer); break;
+        case "attach": void api.close().catch(() => notify("Não foi possível reanexar o console.")); break;
+      }
+    });
+    return () => { offClose(); offCommand(); };
+  }, [present, index, step, board.scenes, presenterFullscreen, audienceOpen, laserEnabled]);
+  const openOperator = async () => {
+    const api = window.orquestraOperator;
+    if (!api) { notify("A janela separada está disponível no aplicativo desktop."); return; }
+    try {
+      const opened = await api.open();
+      if (opened) { setOperatorOpen(true); setPresenterMinimized(true); }
+      else notify("Não foi possível separar o console.");
+    } catch { notify("Não foi possível separar o console."); }
+  };
   const startPresentation = () => {
     if (!present) presenterWasFullscreen.current = presenterFullscreen || !!document.fullscreenElement;
     setPresent(true);
@@ -780,9 +907,11 @@ function App({ initial }: { initial: Library }) {
     setPlaying(false);
     setLaserEnabled(false);
     clearLaser();
-    setPresenterMinimized(false);
+    setPresenterMinimized(true);
+    setOperatorTimer({ elapsedMs: 0, startedAt: null });
     setEditing(null);
     fit();
+    if (window.orquestraOperator) void openOperator();
   };
   const openAudience = async () => {
     if (!window.orquestraPresenter) { notify("A segunda tela está disponível no aplicativo desktop."); return; }
@@ -796,6 +925,8 @@ function App({ initial }: { initial: Library }) {
     } catch { notify("Não foi possível abrir a tela do público."); }
   };
   const stopPresentation = () => {
+    if (operatorOpen) void window.orquestraOperator?.close().catch(() => notify("Não foi possível fechar o console separado."));
+    setOperatorOpen(false);
     setPresent(false); setPlaying(false); setLaserEnabled(false); clearLaser();
     if (audienceOpen) void window.orquestraPresenter?.closeAudience().catch(() => notify("Não foi possível fechar a tela do público."));
     setAudienceOpen(false);
@@ -941,8 +1072,7 @@ function App({ initial }: { initial: Library }) {
       ...current,
       items: current.items.map((item) => {
         if (!editable.has(item.id)) return item;
-        const styled = applySavedStyle(item, style);
-        return styled.autoHeight ? { ...styled, h: autoHeightFor(styled, wrapText(styled).length) } : styled;
+        return applySavedStyle(item, style);
       }),
     }));
     notify(`Estilo “${style.name}” aplicado.`);
@@ -1005,6 +1135,16 @@ function App({ initial }: { initial: Library }) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         void saveNow().catch(() => {});
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
         return;
       }
       if (
@@ -1137,6 +1277,7 @@ function App({ initial }: { initial: Library }) {
         );
         if (t) {
           setTool(t.id);
+          if (t.id === "pen") { setSelected([]); setSelectedHeading(null); setConnectionEdit(null); }
           setEditing(null);
         }
       }
@@ -1368,6 +1509,7 @@ function App({ initial }: { initial: Library }) {
       }
       return;
     }
+    const priorHistory = [...history.current], priorFuture = [...future.current];
     checkpoint();
     const i: Item = {
       id: uid(),
@@ -1407,13 +1549,13 @@ function App({ initial }: { initial: Library }) {
       step: 0,
       animation: tool === "pen" ? "draw" : "fade",
       ...(["text", "note", "agent"].includes(tool) ? { autoHeight: true } : {}),
-      ...(tool === "pen" ? { points: [[0, 0]] } : {}),
+      ...(tool === "pen" ? { points: [[0, 0]], ...penOptions } : {}),
       ...(tool === "arrow" ? { from: hit(p)?.id } : {}),
     };
     if (tool === "agent") i.text = "Novo agente\nDuplo clique para editar";
     updateScene((s) => ({ ...s, items: [...s.items, i] }));
     setSelected([i.id]);
-    gesture.current = { kind: "create", p, id: i.id, type: tool };
+    gesture.current = { kind: "create", p, id: i.id, type: tool, priorHistory, priorFuture };
     if (["text", "agent", "note"].includes(tool)) {
       setTool("select");
       setTimeout(() => setEditing(i.id), 30);
@@ -1565,7 +1707,10 @@ function App({ initial }: { initial: Library }) {
           i.id !== g.id
             ? i
             : i.type === "pen"
-              ? { ...i, points: [...i.points!, [dx, dy]] }
+              ? { ...i, points: appendPenSamples(i.points || [],
+                  [...(e.nativeEvent.getCoalescedEvents?.() || []), e.nativeEvent].map(sample => {
+                    const at = point(sample); return [at.x - g.p.x, at.y - g.p.y];
+                  }), view.z, e.type === "pointerup") }
               : i.type === "arrow"
                 ? (() => {
                     const target = hit(p);
@@ -1603,6 +1748,13 @@ function App({ initial }: { initial: Library }) {
   const cancelGesture = () => {
     const g = gesture.current;
     if (!g) return;
+    if (g.kind === "create" && g.type === "pen") {
+      updateScene(s => ({ ...s, items: s.items.filter(item => item.id !== g.id) }));
+      history.current = g.priorHistory;
+      future.current = g.priorFuture;
+      setSelected([]);
+      tick(n => n + 1);
+    }
     if (g.kind === "marquee") setSelected(g.base);
     if (["move", "resize", "selection-resize"].includes(g.kind) && g.checkpoint) {
       updateScene((s) => ({ ...s, items: g.items }));
@@ -1623,6 +1775,7 @@ function App({ initial }: { initial: Library }) {
     setAlignmentGuides([]);
   };
   const up = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (gesture.current?.kind === "create" && gesture.current.type === "pen") move(e);
     if (gesture.current && ["move", "resize", "marquee", "selection-resize", "heading-move", "heading-resize"].includes(gesture.current.kind))
       move(e);
     if (gesture.current && ["connector-create", "connector-endpoint"].includes(gesture.current.kind)) move(e);
@@ -1688,7 +1841,8 @@ function App({ initial }: { initial: Library }) {
             : i,
         ),
       }));
-      setTool("select");
+      if (g.type === "pen") setSelected([]);
+      else setTool("select");
     }
     gesture.current = null;
     setConnectorPreview(null);
@@ -1723,11 +1877,8 @@ function App({ initial }: { initial: Library }) {
     setSelected(itemSelection(scene.items, i.id));
     setTab("style");
     setSidebar(true);
-    setTimeout(() => {
-      const input = document.querySelector<HTMLTextAreaElement>('[aria-label="Título do frame"]');
-      input?.focus();
-      input?.scrollIntoView({ block: "nearest" });
-    }, 0);
+    checkpoint();
+    setEditing(i.id);
   };
   const editItem = (i: Item) => {
     if (i.locked || i.hidden) {
@@ -1751,7 +1902,7 @@ function App({ initial }: { initial: Library }) {
     }
     if (i.type === "file" && ((i.assetMime || "").toLowerCase().includes("pdf") || i.assetName?.toLowerCase().endsWith(".pdf"))) {
       setInteractId(null);
-      setPdfPreview({ assetId: i.assetId || "", name: i.assetName || "Documento PDF" });
+      setPdfPreview({ assetId: i.assetId || "", name: i.assetName || "Documento PDF", page: i.pdfPage });
       return;
     }
     setSelected(itemSelection(scene.items, i.id));
@@ -1759,7 +1910,7 @@ function App({ initial }: { initial: Library }) {
     setSidebar(true);
     if (["image", "video", "audio", "file", "link", "icon"].includes(i.type)) {
       if (!["image", "icon"].includes(i.type)) setInteractId(i.id);
-    } else if (!["arrow", "pen"].includes(i.type)) {
+    } else if (i.type !== "pen") {
       checkpoint();
       setEditing(i.id);
     }
@@ -1812,6 +1963,24 @@ function App({ initial }: { initial: Library }) {
       y: cy - ((cy - v.y) * next) / v.z,
       z: next,
     }));
+  };
+  const revealSearchMatch = (match: SearchMatch) => {
+    const targetScene = board.scenes[match.sceneIndex];
+    if (!targetScene) return;
+    if (targetScene.id !== scene.id) go(match.sceneIndex);
+    const item = match.itemId ? targetScene.items.find((candidate) => candidate.id === match.itemId) : undefined;
+    setSelected(item ? itemSelection(targetScene.items, item.id) : []);
+    setSelectedHeading(match.field === "sceneName" ? "name" : match.field === "sceneDescription" ? "description" : match.field === "sceneSubtitle" ? "subtitle" : null);
+    const el = canvasRef.current;
+    if (!item || !el) return;
+    const z = Math.max(0.35, Math.min(view.z, 1.2));
+    setSmooth(true);
+    setView({
+      z,
+      x: el.clientWidth / 2 - (item.x + item.w / 2) * z,
+      y: el.clientHeight / 2 - (item.y + item.h / 2) * z,
+    });
+    setTimeout(() => setSmooth(false), 550);
   };
   useEffect(() => {
     const el = canvasRef.current!;
@@ -2280,6 +2449,9 @@ function App({ initial }: { initial: Library }) {
         "text/plain",
         items.map((i) => i.text || i.assetName || i.icon || i.type).join("\n"),
       );
+      if (items.length === 1 && items[0].rich) {
+        e.clipboardData.setData("text/html", richToClipboardHtml(items[0].text, items[0].rich));
+      }
       e.preventDefault();
       clipboardCount.current = { key: serialized, count: 0 };
       if (e.type === "cut") deleteSelected();
@@ -2373,19 +2545,18 @@ function App({ initial }: { initial: Library }) {
   const renderItem = (i: Item) => {
     if (i.hidden || (i.type === "arrow" && scene.items.some((target) => target.hidden && (target.id === i.from || target.id === i.to)))) return null;
     if (!visibleItemIds.has(i.id)) return null;
-    const path = i.type === "arrow" ? arrowGeometry(i, scene.items).path : "";
+    const geometry = i.type === "arrow" ? arrowGeometry(i, scene.items) : null;
+    const path = geometry?.path || "";
     const bounds = itemBounds(i, scene.items);
     const c = mappedColor(i.color),
-      lines = wrapText(i),
       hidden = present && i.step > step;
     const visible =
       (present || previewMotion) && !hidden && i.animation !== "none";
     const Icon = iconByName(i.icon);
-    const alignment = i.textAlign || (["agent", "text", "note"].includes(i.type) ? "left" : "center");
-    const textAnchor = alignment === "center" ? "middle" : alignment === "right" ? "end" : "start";
-    const textLeft = i.type === "agent" ? i.x + 72 : i.x + 16;
-    const textX = alignment === "center" ? (i.type === "agent" ? i.x + 72 + (i.w - 94) / 2 : i.x + i.w / 2) : alignment === "right" ? i.x + i.w - 16 : textLeft;
-    const rowSpacing = i.size * (i.lineHeight ?? 1.1);
+    const text = textRender(i, measureText);
+    const lines = text.lines;
+    const textPlacement = text.placement as ItemTextPlacement;
+    const titleHeight = frameTitleHeightOf(i, measureText);
     return (
       <g
         key={i.id}
@@ -2449,37 +2620,25 @@ function App({ initial }: { initial: Library }) {
               checkpoint();
               updateScene((current) => ({ ...current, items: current.items.map((item) => item.id === i.id ? { ...item, pdfPage: page } : item) }));
             }}
-            onOpenPdf={(assetId) => setPdfPreview({ assetId, name: i.assetName || "Documento PDF" })}
+            onOpenPdf={(assetId) => setPdfPreview({ assetId, name: i.assetName || "Documento PDF", page: i.pdfPage })}
             onOpenLink={() => setLinkPreview({ url: i.url || "", title: i.text })}
           />
         ) : i.type === "arrow" ? (
           <ArrowVisual
             item={i}
             path={path}
+            labelPoint={geometry ? pointAlongPath(geometry.points, i.arrowLabelPosition ?? 0.5) : undefined}
             color={c}
             animated={(present || previewMotion) && !hidden}
+            interactiveLinks={present}
+            onOpenLink={(url) => { void openLink(url).catch((error) => notify((error as Error).message)); }}
           />
         ) : i.type === "pen" ? (
           <>
-            <polyline
-              points={i.points
-                ?.map((p) => `${i.x + p[0]},${i.y + p[1]}`)
-                .join(" ")}
-              fill="none"
-              stroke="transparent"
-              strokeWidth={12 / view.z}
-              pointerEvents="stroke"
-            />
-            <polyline
-              points={i.points
-                ?.map((p) => `${i.x + p[0]},${i.y + p[1]}`)
-                .join(" ")}
-              fill="none"
-              stroke={c}
-              strokeWidth={2.5}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path data-editor-helper="true" d={penPath(i)} fill="none" stroke="transparent"
+              strokeWidth={Math.max(penWidthOf(i), 12 / view.z)} strokeLinecap="round" pointerEvents="stroke" />
+            <path data-pen-stroke="true" d={penPath(i)} fill="none" stroke={c}
+              strokeWidth={penWidthOf(i)} opacity={penOpacityOf(i)} strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
           </>
         ) : (
           <>
@@ -2574,42 +2733,62 @@ function App({ initial }: { initial: Library }) {
               >
                 <rect
                   x={i.x + 8}
-                  y={i.y - frameTitleHeight(i)}
+                  y={i.y - titleHeight}
                   width={Math.max(0, i.w - 16)}
-                  height={frameTitleHeight(i)}
+                  height={titleHeight}
                   fill="transparent"
                   pointerEvents="all"
                 />
-                <text
-                  x={i.x + 14}
-                  y={i.y - frameTitleHeight(i) + i.size + 3}
-                  fill={resolveItemTextColor({ ...i, fill: "transparent" }, light)}
-                  fontFamily={fontStacks[i.fontFamily || "DM Sans"]}
-                  fontSize={i.size}
-                  fontWeight={i.bold ? 700 : 500}
-                  fontStyle={i.italic ? "italic" : "normal"}
-                  style={{ userSelect: "none", pointerEvents: "none" }}
-                >
-                  {lines.map((line, n) => (
-                    <tspan key={n} x={i.x + 14} dy={n ? i.size * (i.lineHeight || 1.1) : 0}>
-                      {line}
-                    </tspan>
-                  ))}
-                </text>
+                {text.rich ? (
+                  <g style={{ pointerEvents: "none" }}>
+                    <RichTextVisual
+                      lines={text.layout!.lines}
+                      lineSteps={text.layout!.lineSteps}
+                      baseY={textPlacement.baseY}
+                      color={resolveItemTextColor({ ...i, fill: "transparent" }, light)}
+                      fontFamily={fontStacks[i.fontFamily || "DM Sans"]}
+                      mapColor={mappedColor}
+                    />
+                  </g>
+                ) : (
+                  <text
+                    x={textPlacement.x}
+                    y={i.y - titleHeight + i.size + 3}
+                    textAnchor={textPlacement.anchor}
+                    fill={resolveItemTextColor({ ...i, fill: "transparent" }, light)}
+                    fontFamily={fontStacks[i.fontFamily || "DM Sans"]}
+                    fontSize={i.size}
+                    fontWeight={i.bold ? 700 : 500}
+                    fontStyle={i.italic ? "italic" : "normal"}
+                    style={{ userSelect: "none", pointerEvents: "none" }}
+                  >
+                    {lines.map((line, n) => (
+                      <tspan key={n} x={textPlacement.x} dy={textPlacement.lineSteps[n]}>
+                        {line}
+                      </tspan>
+                    ))}
+                  </text>
+                )}
               </g>
             )}
-            {i.type !== "frame" && <text
-              x={textX}
-              y={
-                i.type === "agent"
-                  ? i.y + 42
-                  : i.type === "text"
-                    ? i.y + 30
-                    : i.type === "note"
-                      ? i.y + 38
-                    : i.y + i.h / 2 - (lines.length - 1) * rowSpacing * 0.5 + 8
-              }
-              textAnchor={textAnchor}
+            {i.type !== "frame" && (text.rich ? (
+              <g style={{ pointerEvents: present ? "auto" : "none" }}>
+                <RichTextVisual
+                  lines={text.layout!.lines}
+                  lineSteps={text.layout!.lineSteps}
+                  baseY={textPlacement.baseY}
+                  color={resolveItemTextColor(i, light)}
+                  fontFamily={fontStacks[i.fontFamily || "Caveat"]}
+                  mapColor={mappedColor}
+                  interactiveLinks={present}
+                  onOpenLink={(url) => { void openLink(url).catch((error) => notify((error as Error).message)); }}
+                />
+              </g>
+            ) : (
+            <text
+              x={textPlacement.x}
+              y={textPlacement.baseY}
+              textAnchor={textPlacement.anchor}
               fill={resolveItemTextColor(i, light)}
               fontFamily={fontStacks[i.fontFamily || "Caveat"]}
               fontSize={i.size}
@@ -2620,8 +2799,8 @@ function App({ initial }: { initial: Library }) {
               {lines.map((l, n) => (
                 <tspan
                   key={n}
-                  x={textX}
-                  dy={n ? i.size * (i.type === "agent" ? 0.72 : 1) * (i.lineHeight ?? 1.1) : 0}
+                  x={textPlacement.x}
+                  dy={textPlacement.lineSteps[n]}
                   fontSize={i.type === "agent" && n ? i.size * 0.72 : undefined}
                   fontWeight={i.bold ? 700 : 500}
                   fontStyle={i.italic ? "italic" : "normal"}
@@ -2629,7 +2808,8 @@ function App({ initial }: { initial: Library }) {
                   {l}
                 </tspan>
               ))}
-            </text>}
+            </text>
+            ))}
           </>
         )}
         {!present && selected.includes(i.id) && (
@@ -2717,9 +2897,74 @@ function App({ initial }: { initial: Library }) {
   const renderedItems = useMemo(() => scene.items.map(renderItem), [
     scene.items, scene.id, visibleItemIds, selected, present, previewMotion, step,
     view.z, light, interactId, tool, hoveredConnectorItem, connectionPortItemIds,
-    connectionEdit, connectorPreview, youtubePlaybackIds, audienceOpen,
+    connectionEdit, connectorPreview, youtubePlaybackIds, audienceOpen, fontVersion,
   ]);
   const editableSelected = editableSelection(scene.items, selected);
+  const richTargets = scene.items.filter((item) => editableSelected.includes(item.id));
+  const richState = stateForItems(richTargets);
+  const richCommon = <T,>(read: (item: Item) => T) => commonValue(richTargets, read);
+  const applyRich = (fn: (item: Item, rich: ReturnType<typeof normalizeRich>) => ReturnType<typeof normalizeRich>) => {
+    const eligible = new Set(editableSelected);
+    if (!eligible.size) return;
+    change((current) => ({
+      ...current,
+      items: current.items.map((item) => {
+        if (!eligible.has(item.id)) return item;
+        const next = fn(item, normalizeRich(item.text, item.rich));
+        return withAutoHeight(item, { rich: hasRichText(next) ? next : undefined });
+      }),
+    }));
+  };
+  const richActions = {
+    toggle: (key: "bold" | "italic" | "underline" | "strike") => {
+      if (key === "underline" || key === "strike") {
+        applyRich((item, rich) => toggleRichProperty(item.text, rich, 0, item.text.length, key, { bold: item.bold, italic: item.italic, size: item.size, fontFamily: item.fontFamily }));
+        return;
+      }
+      // Whole-element toggles stay item-level so legacy boards keep their DOM shape.
+      const value = richState[key] !== "on";
+      const eligible = new Set(editableSelected);
+      change((current) => ({
+        ...current,
+        items: current.items.map((item) => {
+          if (!eligible.has(item.id)) return item;
+          const cleared = applyRichStyle(item.text, normalizeRich(item.text, item.rich), 0, item.text.length, { [key]: null });
+          return withAutoHeight(item, { [key]: value, rich: hasRichText(cleared) ? cleared : undefined });
+        }),
+      }));
+    },
+    setColor: (color: string | null) => applyRich((item, rich) => applyRichStyle(item.text, rich, 0, item.text.length, { color })),
+    setHighlight: (color: string | null) => applyRich((item, rich) => applyRichStyle(item.text, rich, 0, item.text.length, { highlight: color })),
+    setSize: (size: number) => applyRich((item, rich) => applyRichStyle(item.text, rich, 0, item.text.length, { size })),
+    setFamily: (family: NonNullable<Item["fontFamily"]>) => applyRich((item, rich) => applyRichStyle(item.text, rich, 0, item.text.length, { fontFamily: family })),
+    setLink: (url: string | null) => {
+      if (url) {
+        try { safeLink(url); } catch (error) { notify((error as Error).message); return; }
+      }
+      applyRich((item, rich) => applyRichStyle(item.text, rich, 0, item.text.length, { link: url }));
+    },
+    setList: (list: "none" | "bullet" | "ordered") => applyRich((item, rich) =>
+      setBlocks(item.text, rich, item.text.split("\n").map((_, index) => index), { list })),
+    indent: (delta: number) => applyRich((item, rich) => {
+      const indexes = item.text.split("\n").map((_, index) => index);
+      const current = Math.min(...indexes.map((index) => blockAt(rich, index).indent ?? 0));
+      return setBlocks(item.text, rich, indexes, { indent: Math.max(0, Math.min(8, current + delta)) });
+    }),
+    setAlign: (align: "left" | "center" | "right") => {
+      const eligible = new Set(editableSelected);
+      change((current) => ({
+        ...current,
+        items: current.items.map((item) => {
+          if (!eligible.has(item.id)) return item;
+          const cleared = setBlocks(item.text, normalizeRich(item.text, item.rich), item.text.split("\n").map((_, index) => index), { align: null });
+          return withAutoHeight(item, { textAlign: align, rich: hasRichText(cleared) ? cleared : undefined });
+        }),
+      }));
+    },
+    preset: (preset: "body" | "lead" | "h1" | "h2" | "h3" | "quote") => applyRich((item, rich) =>
+      applyPreset(item.text, rich, 0, item.text.length, preset)),
+    clear: () => applyRich((item, rich) => clearRichStyle(item.text, rich, 0, item.text.length)),
+  };
   const selectedBounds = selectionBounds(scene.items, selected);
   const multipleTransformable = canTransformSelection(scene.items, selected);
   const selectedYoutubeItem = selected.length === 1
@@ -2782,7 +3027,7 @@ function App({ initial }: { initial: Library }) {
   })();
   return (
     <div
-      className={`app ${window.orquestraDesktop ? "desktop" : ""} ${light ? "light" : ""} accent-${accent} ${present ? "presenting" : ""} ${present && presenterMinimized ? "presenter-minimized" : ""} ${audienceOpen ? "audience-open" : ""}`}
+      className={`app ${window.orquestraDesktop ? "desktop" : ""} ${light ? "light" : ""} accent-${accent} ${present ? "presenting" : ""} ${present && (presenterMinimized || operatorOpen) ? "presenter-minimized" : ""} ${audienceOpen ? "audience-open" : ""}`}
     >
       {insertTab && (
         <InsertPanel
@@ -2794,6 +3039,29 @@ function App({ initial }: { initial: Library }) {
           busy={mediaBusy}
         />
       )}
+      {aiOpen && <AiDialog onClose={() => setAiOpen(false)} onApply={async (outline: AiOutline, layout: AiLayout, duration: number, destination: "new" | "append", file: File | null, pages: number[], animations: boolean, simplified: boolean) => {
+        const api = window.orquestraDesktop;
+        if (!api) throw new Error("Disponível no aplicativo desktop.");
+        const before = libraryRef.current;
+        const id = file ? uid() : undefined;
+        const generated = outlineToBoard(outline, layout, duration, file && id ? { id, name: file.name, pages } : undefined, animations, simplified);
+        let next: Library;
+        if (destination === "new") {
+          const project = makeProject(generated.title); project.board = generated;
+          next = { ...before, activeId: project.id, projects: [...before.projects, project] };
+        } else {
+          next = { ...before, projects: before.projects.map(p => p.id === before.activeId ? { ...p, updatedAt: new Date().toISOString(), board: { ...p.board, scenes: [...p.board.scenes, ...generated.scenes] } } : p) };
+        }
+        let savedAsset = false;
+        try {
+          if (file && id) { await api.putAsset({id, name:file.name, mime:"application/pdf", size:file.size, data:new Uint8Array(await file.arrayBuffer())}); savedAsset = true; }
+          if (libraryRef.current !== before) throw new Error("O projeto mudou durante a aplicação; tente novamente.");
+          await writeLibrary(next);
+        } catch (error) { if (savedAsset && id) await api.removeNewAsset(id).catch(() => {}); throw error; }
+        if (destination === "append") checkpoint();
+        libraryRef.current = next; setLibrary(next); setSceneId(generated.scenes[0].id); setSelected([]);
+        notify(destination === "new" ? "Projeto criado com IA." : "Seções adicionadas. Use Desfazer para reverter.");
+      }} />}
       {projectsOpen && (
         <ProjectManager
           library={library}
@@ -2852,7 +3120,7 @@ function App({ initial }: { initial: Library }) {
           }}
         />
       )}
-      <header>
+      <header className="editor-header">
         <div className="brand">
           <div className="brand-mark">
             <Workflow size={21} />
@@ -2874,6 +3142,7 @@ function App({ initial }: { initial: Library }) {
           <FolderOpen size={17} />
           <span>Projetos</span>
         </button>
+        <button className="projects-trigger" title="Criar com IA" aria-label="Criar com IA" onClick={() => setAiOpen(true)}><Sparkles size={17} /><span>Criar com IA</span></button>
         <input
           className="document-title"
           aria-label="Título do quadro"
@@ -2894,6 +3163,7 @@ function App({ initial }: { initial: Library }) {
         <div className="header-actions">
           <button
             className="icon-button save-button"
+            aria-label="Salvar projeto"
             title="Salvar projeto (Ctrl+S)"
             onClick={() => {
               void saveNow().catch(() => {});
@@ -2919,6 +3189,9 @@ function App({ initial }: { initial: Library }) {
           <div className="export-wrap">
             <button
               className="export-button"
+              aria-label="Exportar e importar quadro"
+              aria-expanded={exports}
+              title="Exportar e importar quadro"
               onClick={() => setExports(!exports)}
             >
               <Download size={17} />
@@ -3174,6 +3447,23 @@ function App({ initial }: { initial: Library }) {
               )}
             </g>
           </svg>
+          {!present && (tool === "pen" || (tool === "select" && selected.length === 1 && sel?.type === "pen")) && (() => {
+            const item = tool === "select" && sel?.type === "pen" ? sel : null;
+            const options = item ? { penWidth: penWidthOf(item), penOpacity: penOpacityOf(item), penSmooth: item.penSmooth ?? false } : penOptions;
+            const update = (values: Partial<typeof penOptions>) => {
+              if (item) patch(values);
+              else setPenOptions(previous => ({ ...previous, ...values }));
+            };
+            return <div className="pen-controls" role="group" aria-label="Opções de desenho">
+              <div className="pen-controls-heading"><Pencil size={15} /><strong>{item ? "Editar traço" : "Desenho livre"}</strong><span>{item ? "Selecionado" : "P"}</span></div>
+              <svg className="pen-preview" viewBox="0 0 200 32" aria-label="Prévia do traço"><path d="M 8 23 Q 45 -4 95 16 T 192 9" fill="none" stroke={mappedColor(item?.color || color)} strokeWidth={options.penWidth} opacity={options.penOpacity} strokeLinecap="round" /></svg>
+              <div className="pen-colors" role="group" aria-label="Cor do desenho">{colors.map(value => <button key={value} type="button" aria-label={`Cor do desenho ${value}`} aria-pressed={(item?.color || color) === value} title={value} style={{ "--pen-swatch": mappedColor(value) } as React.CSSProperties} onClick={() => { if (item) patch({ color: value }); else setColor(value); }} />)}</div>
+              <label>Espessura <output>{options.penWidth} px</output><input aria-label="Espessura do desenho" type="range" min="1" max="24" step="0.5" value={options.penWidth} onChange={e => update({ penWidth: +e.target.value })} /></label>
+              <label>Opacidade <output>{Math.round(options.penOpacity * 100)}%</output><input aria-label="Opacidade do desenho" type="range" min="10" max="100" step="5" value={Math.round(options.penOpacity * 100)} onChange={e => update({ penOpacity: +e.target.value / 100 })} /></label>
+              <label className="pen-smoothing"><input type="checkbox" checked={options.penSmooth} onChange={e => update({ penSmooth: e.target.checked })} />Suavizar traço</label>
+              {!item && <small>Desenhe em sequência. Esc para selecionar.</small>}
+            </div>;
+          })()}
           {selectedYoutube && selectedYoutubeItem && youtubeToolbarStyle && !present && (
             <YouTubeBoardControls
               item={selectedYoutubeItem}
@@ -3238,35 +3528,20 @@ function App({ initial }: { initial: Library }) {
           )}
           {editing &&
             (() => {
-              const i = scene.items.find((i) => i.id === editing);
+              const i = scene.items.find((target) => target.id === editing);
               if (!i) return null;
               return (
-                <textarea
-                  autoFocus
-                  className="canvas-edit"
-                  aria-label="Editar texto do elemento"
-                  style={{
-                    left: i.x * view.z + view.x,
-                    top: i.y * view.z + view.y,
-                    width: Math.max(160, i.w * view.z),
-                    height: Math.max(85, i.h * view.z),
-                    fontSize: i.size * view.z,
-                    color: resolveItemTextColor(i.type === "frame" ? { ...i, fill: "transparent" } : i, light),
-                    fontFamily: fontStacks[i.fontFamily || "Caveat"],
-                    fontWeight: i.bold ? 700 : 500,
-                    fontStyle: i.italic ? "italic" : "normal",
-                    lineHeight: i.lineHeight || 1.1,
-                    textAlign: i.textAlign || "left",
-                  }}
-                  placeholder="Digite seu texto"
-                  value={i.text}
-                  onChange={(e) => patchItem(editing!, { text: e.target.value })}
-                  onBlur={() => setEditing(null)}
-                  onKeyDown={(e) => {
-                    e.stopPropagation();
-                    if (e.key === "Escape" || (e.ctrlKey && e.key === "Enter"))
-                      setEditing(null);
-                  }}
+                <CanvasTextEditor
+                  item={i}
+                  items={scene.items}
+                  view={view}
+                  light={light}
+                  itemColor={renderedItemTextColor(i, light)}
+                  fontStack={i.type === "arrow" ? arrowFontStack(i) : fontStacks[i.fontFamily || (i.type === "frame" ? "DM Sans" : "Caveat")]}
+                  onUpdate={(values) => patchItem(i.id, values)}
+                  onCheckpoint={checkpoint}
+                  onClose={() => setEditing(null)}
+                  onNotify={notify}
                 />
               );
             })()}
@@ -3284,6 +3559,7 @@ function App({ initial }: { initial: Library }) {
                       className={tool === t.id ? "active" : ""}
                       onClick={() => {
                         setTool(t.id);
+                        if (t.id === "pen") { setSelected([]); setSelectedHeading(null); setConnectionEdit(null); }
                         setEditing(null);
                       }}
                     >
@@ -3326,6 +3602,7 @@ function App({ initial }: { initial: Library }) {
               <div className="history">
                 <button
                   className="icon-button"
+                  aria-label="Desfazer"
                   title="Desfazer (Ctrl+Z)"
                   disabled={!history.current.length}
                   onClick={undo}
@@ -3334,11 +3611,20 @@ function App({ initial }: { initial: Library }) {
                 </button>
                 <button
                   className="icon-button"
+                  aria-label="Refazer"
                   title="Refazer (Ctrl+Shift+Z)"
                   disabled={!future.current.length}
                   onClick={redo}
                 >
                   <Redo2 size={17} />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="Buscar e substituir no projeto"
+                  title="Buscar e substituir (Ctrl+F)"
+                  onClick={() => setSearchOpen(true)}
+                >
+                  <Search size={17} />
                 </button>
               </div>
             </>
@@ -3463,7 +3749,7 @@ function App({ initial }: { initial: Library }) {
           )}
         </div>
         {!present && sidebar && (
-          <aside>
+          <aside className="editor-sidebar">
             <div className="aside-tabs">
               <button
                 className={tab === "sections" ? "active" : ""}
@@ -3496,6 +3782,7 @@ function App({ initial }: { initial: Library }) {
               </button>
               <button
                 className="collapse"
+                aria-label="Recolher painel"
                 title="Recolher painel"
                 onClick={() => setSidebar(false)}
               >
@@ -3531,45 +3818,41 @@ function App({ initial }: { initial: Library }) {
                 <div className="section-settings">
                   <div className="section-settings-heading"><strong>Seção atual</strong><button className="save-section-template icon-button" aria-label="Salvar seção como modelo" title="Salvar seção como modelo" onClick={() => setNameDialog({ kind: "template", value: scene.name || "Minha seção" })}><Save size={14} /></button></div>
                   <p className="section-edit-hint">Edite aqui ou com duplo clique no canvas.</p>
-                  <label>
-                    Nome da seção
-                    <input
-                      aria-label="Nome da seção"
-                      value={scene.name}
-                      onFocus={checkpoint}
-                      onChange={(e) =>
-                        updateScene((s) => ({ ...s, name: e.target.value }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Título no canvas
-                    <textarea
-                      aria-label="Título da seção"
-                      value={scene.description}
-                      onFocus={checkpoint}
-                      onChange={(e) =>
-                        updateScene((s) => ({
-                          ...s,
-                          description: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Subtítulo no canvas
-                    <textarea
-                      aria-label="Subtítulo da seção"
-                      value={sceneSubtitle}
-                      onFocus={checkpoint}
-                      onChange={(e) =>
-                        updateScene((s) => ({
-                          ...s,
-                          subtitle: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
+                  <div className="heading-fields" aria-label="Textos da seção">
+                    <label className="heading-field">
+                      <span className="heading-field-label">Nome da seção <em>{scene.name.length}</em></span>
+                      <textarea
+                        aria-label="Nome da seção"
+                        rows={2}
+                        value={scene.name}
+                        onFocus={checkpoint}
+                        onChange={(e) => updateScene((s) => ({ ...s, name: e.target.value }))}
+                      />
+                      <small>Aparece na lista de seções e no topo do canvas.</small>
+                    </label>
+                    <label className="heading-field">
+                      <span className="heading-field-label">Título no canvas <em>{scene.description.length}</em></span>
+                      <textarea
+                        aria-label="Título da seção"
+                        rows={2}
+                        value={scene.description}
+                        onFocus={checkpoint}
+                        onChange={(e) => updateScene((s) => ({ ...s, description: e.target.value }))}
+                      />
+                      <small>Frase principal, em destaque acima do conteúdo.</small>
+                    </label>
+                    <label className="heading-field">
+                      <span className="heading-field-label">Subtítulo no canvas <em>{sceneSubtitle.length}</em></span>
+                      <textarea
+                        aria-label="Subtítulo da seção"
+                        rows={2}
+                        value={sceneSubtitle}
+                        onFocus={checkpoint}
+                        onChange={(e) => updateScene((s) => ({ ...s, subtitle: e.target.value }))}
+                      />
+                      <small>Texto de apoio opcional; vazio oculta a linha.</small>
+                    </label>
+                  </div>
                   <label className="presenter-notes-editor">
                     Notas privadas do apresentador <span>{((scene as Scene & {presenterNotes?:string}).presenterNotes || "").length}/20000</span>
                     <textarea aria-label="Notas privadas do apresentador" maxLength={20000} value={(scene as Scene & {presenterNotes?:string}).presenterNotes || ""} onFocus={checkpoint} onChange={(e) => updateScene((s) => ({ ...s, presenterNotes: e.target.value } as Scene))} placeholder="Visíveis somente no console privado ao apresentar em duas telas." />
@@ -3616,6 +3899,32 @@ function App({ initial }: { initial: Library }) {
                     </div>
                     <p className="field-help">Arraste o texto no canvas para mover. A alça no canto ajusta largura e fonte. Os valores antigos continuam iguais até você alterar o layout.</p>
                   </section>
+                  </details>
+                  <details className="section-advanced section-timing">
+                    <summary>Duração e transição <ChevronDown size={13} /></summary>
+                    <div className="style-panel section-timing-controls">
+                      <TransitionControls
+                        scene={scene}
+                        onChange={(value) => change((s) => ({ ...s, ...value }))}
+                      />
+                      <label>
+                        Duração da seção <span>{scene.duration}s</span>
+                      </label>
+                      <input
+                        aria-label="Duração da seção"
+                        type="range"
+                        min="2"
+                        max="30"
+                        value={scene.duration}
+                        onPointerDown={checkpoint}
+                        onChange={(e) =>
+                          updateScene((s) => ({ ...s, duration: +e.target.value }))
+                        }
+                      />
+                      <p className="field-help">
+                        Tempo total de reprodução automática desta seção.
+                      </p>
+                    </div>
                   </details>
                   <div className="section-settings-row">
                     <span>Ordem da seção</span>
@@ -3747,25 +4056,12 @@ function App({ initial }: { initial: Library }) {
                   <Settings2 size={15} />
                   {sel ? "Elemento selecionado" : "Ferramenta de desenho"}
                 </div>
-                {selected.length > 0 && <section className="arrange-tools" aria-label="Alinhar, distribuir e agrupar">
-                  <div className="panel-subheading">Organizar seleção</div>
-                  <div className="arrange-grid">
-                    {([
-                      ["left", "Esquerda"], ["center-x", "Centro horizontal"], ["right", "Direita"],
-                      ["top", "Topo"], ["center-y", "Centro vertical"], ["bottom", "Base"],
-                    ] as Array<[Alignment, string]>).map(([operation, label]) => (
-                      <button key={operation} aria-label={`Alinhar ${label.toLowerCase()}`} title={`Alinhar ${label.toLowerCase()}`} disabled={editableSelected.length < 2} onClick={() => arrange(operation)}>{label}</button>
-                    ))}
-                  </div>
-                  <div className="arrange-grid distribute-grid">
-                    <button disabled={editableSelected.length < 3} onClick={() => arrange("horizontal")}>Distribuir ↔</button>
-                    <button disabled={editableSelected.length < 3} onClick={() => arrange("vertical")}>Distribuir ↕</button>
-                  </div>
-                  <div className="template-actions">
-                    <button disabled={editableSelected.length < 2} onClick={() => toggleGroup(false)}>Agrupar · Ctrl+G</button>
-                    <button disabled={!selected.some((id) => scene.items.find((item) => item.id === id)?.groupId)} onClick={() => toggleGroup(true)}>Desagrupar · Ctrl+Shift+G</button>
-                  </div>
-                </section>}
+                <p className="editor-selection-hint" role="status">
+                  {selected.length === 0 ? "Escolha um elemento para editar suas propriedades. A cor abaixo também define a próxima ferramenta." :
+                    editableSelected.length === 0 ? "Seleção bloqueada ou oculta. Use Camadas para desbloquear ou revelar os elementos." :
+                    editableSelected.length < selected.length ? `${selected.length} selecionados; alguns estão bloqueados ou ocultos. Use Camadas para editá-los.` :
+                    selected.length > 1 ? `${selected.length} elementos selecionados. As alterações disponíveis afetam a seleção editável.` : "Ajuste as propriedades do elemento selecionado."}
+                </p>
                 <label>Cor da borda</label>
                 <div className="swatches">
                   {colors.map((c) => (
@@ -3773,7 +4069,7 @@ function App({ initial }: { initial: Library }) {
                       aria-label={`Cor ${c}`}
                       title={c}
                       key={c}
-                      className={(sel?.color || color) === c ? "chosen" : ""}
+                      className={(sel ? richCommon((item) => item.color) : color) === c ? "chosen" : ""}
                       style={{ background: c }}
                       onClick={() => {
                         if (sel) checkpoint();
@@ -3794,7 +4090,7 @@ function App({ initial }: { initial: Library }) {
                     onChange={(e) => updateBorderColor(e.target.value)}
                   />
                 </label>
-                {sel && !["arrow", "pen", "icon", "image", "video", "audio", "file", "link"].includes(sel.type) && (
+                {sel && !["pen", "icon", "image", "video", "audio", "file", "link"].includes(sel.type) && (
                   <>
                     <label>Cor do texto</label>
                     <div className="swatches">
@@ -3803,7 +4099,7 @@ function App({ initial }: { initial: Library }) {
                           key={c}
                           aria-label={`Texto ${c}`}
                           title={`Texto ${c}`}
-                          className={itemTextColor(sel) === c ? "chosen" : ""}
+                          className={richCommon((item) => itemTextColor(item)) === c ? "chosen" : ""}
                           style={{ background: c }}
                           onClick={() => patch({ textColor: c })}
                         />
@@ -3924,16 +4220,17 @@ function App({ initial }: { initial: Library }) {
                     ].includes(sel.type) && (
                       <>
                         <label>
-                          Tamanho do texto <span>{sel.size}px</span>
+                          Tamanho do texto <span>{richCommon((item) => item.size) === MIXED ? "Misto" : `${sel.size}px`}</span>
                         </label>
                         <input
                           aria-label="Tamanho do texto"
                           type="range"
                           min="14"
                           max="60"
-                          value={sel.size}
+                          value={richCommon((item) => item.size) === MIXED ? 28 : sel.size}
+                          data-mixed={richCommon((item) => item.size) === MIXED ? "true" : undefined}
                           onPointerDown={checkpoint}
-                          onChange={(e) => patch({ size: +e.target.value })}
+                          onChange={(e) => resizeSelectedFontSize(+e.target.value)}
                         />
                         {selected.length === 1 && (
                           <>
@@ -3945,17 +4242,19 @@ function App({ initial }: { initial: Library }) {
                               rows={4}
                               value={sel.text}
                               onFocus={checkpoint}
-                              onChange={(e) => patchItem(sel.id, { text: e.target.value })}
+                              onChange={(e) => changeItemText(sel.id, e.target.value)}
                             />
                             <label htmlFor="element-font">Fonte</label>
                             <select
                               id="element-font"
                               aria-label="Fonte do elemento"
-                              value={sel.fontFamily || "Caveat"}
-                              style={{ fontFamily: fontStacks[sel.fontFamily || "Caveat"] }}
+                              value={richCommon((item) => item.fontFamily || (item.type === "arrow" ? "DM Sans" : "Caveat")) === MIXED ? "" : sel.fontFamily || (sel.type === "arrow" ? "DM Sans" : "Caveat")}
+                              data-mixed={richCommon((item) => item.fontFamily || (item.type === "arrow" ? "DM Sans" : "Caveat")) === MIXED ? "true" : undefined}
+                              style={{ fontFamily: fontStacks[sel.fontFamily || (sel.type === "arrow" ? "DM Sans" : "Caveat")] }}
                               onFocus={checkpoint}
-                              onChange={(e) => patchItem(sel.id, { fontFamily: e.target.value as Item["fontFamily"] })}
+                              onChange={(e) => { if (e.target.value) patch({ fontFamily: e.target.value as Item["fontFamily"] }); }}
                             >
+                              {richCommon((item) => item.fontFamily || (item.type === "arrow" ? "DM Sans" : "Caveat")) === MIXED && <option value="">Misto</option>}
                               {fontGroups.map((group) => (
                                 <optgroup key={group.label} label={group.label}>
                                   {group.families.map((family) => (
@@ -3966,18 +4265,73 @@ function App({ initial }: { initial: Library }) {
                                 </optgroup>
                               ))}
                             </select>
-                            <div className="text-formatting" aria-label="Formatação do texto">
-                              <div className="format-toggle-row">
-                                <button aria-label="Negrito" aria-pressed={!!sel.bold} className={sel.bold ? "active" : ""} onClick={() => patch({ bold: !sel.bold })}><strong>B</strong></button>
-                                <button aria-label="Itálico" aria-pressed={!!sel.italic} className={sel.italic ? "active" : ""} onClick={() => patch({ italic: !sel.italic })}><em>I</em></button>
-                                {(["left", "center", "right"] as const).map((alignment) => <button key={alignment} aria-label={`Alinhar texto à ${alignment === "left" ? "esquerda" : alignment === "right" ? "direita" : "centro"}`} aria-pressed={(sel.textAlign || "left") === alignment} className={(sel.textAlign || "left") === alignment ? "active" : ""} onClick={() => patch({ textAlign: alignment })}>{alignment === "left" ? "≡" : alignment === "center" ? "≋" : "≡"}</button>)}
-                              </div>
-                              <label>Entrelinha <span>{(sel.lineHeight || 1.1).toFixed(1)}×</span></label>
-                              <input aria-label="Espaçamento entre linhas" type="range" min="0.8" max="2" step="0.1" value={sel.lineHeight || 1.1} onPointerDown={checkpoint} onChange={(event) => patchItem(sel.id, { lineHeight: +event.target.value })} />
-                              <label className="check-setting"><input type="checkbox" aria-label="Ajustar altura automaticamente" checked={!!sel.autoHeight} onChange={(event) => patch({ autoHeight: event.target.checked })} /> Ajustar altura automaticamente</label>
-                            </div>
                           </>
                         )}
+                        <div className="typography-presets" aria-label="Presets tipográficos">
+                              {typographyPresetLabels.map((preset) => (
+                                <button
+                                  key={preset.id}
+                                  type="button"
+                                  title={preset.hint}
+                                  aria-label={`Aplicar ${preset.label}`}
+                                  className={`preset-chip ${richState.preset === preset.id ? "active" : ""}`}
+                                  data-mixed={richState.preset === MIXED ? "true" : undefined}
+                                  onClick={() => richActions.preset(preset.id)}
+                                >
+                                  {preset.label}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="text-formatting" aria-label="Formatação do texto">
+                              <RichFormatControls
+                                state={richState}
+                                actions={richActions}
+                                swatches={colors}
+                                showParagraph
+                                label="Formatação do texto selecionado"
+                              />
+                              {selected.length === 1 && (<>
+                              <label>Entrelinha <span>{richCommon((item) => item.lineHeight ?? 1.1) === MIXED ? "Misto" : `${(sel.lineHeight || 1.1).toFixed(1)}×`}</span></label>
+                              <input aria-label="Espaçamento entre linhas" type="range" min="0.8" max="2" step="0.1" value={richCommon((item) => item.lineHeight ?? 1.1) === MIXED ? 1.1 : sel.lineHeight || 1.1} onPointerDown={checkpoint} onChange={(event) => patch({ lineHeight: +event.target.value })} />
+                              <label>Alinhamento vertical</label>
+                              <select
+                                aria-label="Alinhamento vertical do texto"
+                                value={richCommon((item) => item.verticalAlign || "top") === MIXED ? "" : defaultVerticalAlignment(sel)}
+                                data-mixed={richCommon((item) => item.verticalAlign || "top") === MIXED ? "true" : undefined}
+                                onChange={(event) => { if (event.target.value) patch({ verticalAlign: event.target.value as NonNullable<Item["verticalAlign"]> }); }}
+                              >
+                                {richCommon((item) => item.verticalAlign || "top") === MIXED && <option value="">Misto</option>}
+                                <option value="top">Topo</option><option value="center">Centro</option><option value="bottom">Base</option>
+                              </select>
+                              <div className="text-padding-controls">
+                                <label>Margem interna horizontal<input aria-label="Margem interna horizontal" type="number" min="0" max="100" placeholder={richCommon((item) => textPaddingX(item)) === MIXED ? "Misto" : undefined} value={richCommon((item) => textPaddingX(item)) === MIXED ? "" : textPaddingX(sel)} onFocus={checkpoint} onChange={(event) => patchItem(sel.id, { textPaddingX: Math.max(0, Math.min(100, +event.target.value || 0)) })} /></label>
+                                <label>Margem interna vertical<input aria-label="Margem interna vertical" type="number" min="0" max="100" placeholder={richCommon((item) => textPaddingY(item)) === MIXED ? "Misto" : undefined} value={richCommon((item) => textPaddingY(item)) === MIXED ? "" : textPaddingY(sel)} onFocus={checkpoint} onChange={(event) => patchItem(sel.id, { textPaddingY: Math.max(0, Math.min(100, +event.target.value || 0)) })} /></label>
+                              </div>
+                              <label>Ajuste automático</label>
+                              <select
+                                aria-label="Modo de ajuste automático"
+                                value={richCommon((item) => autoFitMode(item)) === MIXED ? "" : autoFitMode(sel)}
+                                data-mixed={richCommon((item) => autoFitMode(item)) === MIXED ? "true" : undefined}
+                                onChange={(event) => {
+                                  if (!event.target.value) return;
+                                  const autoFit = event.target.value as "grow" | "shrink" | "fixed";
+                                  patch({ autoFit, autoHeight: autoFit === "grow" });
+                                }}
+                              >
+                                {richCommon((item) => autoFitMode(item)) === MIXED && <option value="">Misto</option>}
+                                <option value="grow">Crescer elemento</option><option value="shrink">Reduzir fonte</option><option value="fixed">Manter tamanho</option>
+                              </select>
+                              <label className="check-setting"><input type="checkbox" aria-label="Ajustar altura automaticamente" checked={autoFitMode(sel) === "grow"} onChange={(event) => patch({ autoFit: event.target.checked ? "grow" : "fixed", autoHeight: event.target.checked })} /> Ajustar altura automaticamente</label>
+                              {itemTextOverflow(sel, wrapText(sel)) > 0 && <p className="text-overflow-warning" role="status">O texto excede a altura do elemento em {itemTextOverflow(sel, wrapText(sel))} px. Aumente o elemento ou escolha “Reduzir fonte”.</p>}
+                              {sel.type === "arrow" && autoFitMode(sel) === "shrink" && (arrowLabelFor(sel, measureHeadingWidth).lines as unknown[]).length > 1 && <p className="text-overflow-warning" role="status">O rótulo ainda excede a largura da seta na fonte mínima; ele será exibido em várias linhas.</p>}
+                              {sel.type === "arrow" && <>
+                                <label>Posição do rótulo na seta <span>{Math.round((sel.arrowLabelPosition ?? 0.5) * 100)}%</span></label>
+                                <input aria-label="Posição do rótulo na seta" type="range" min="0" max="100" value={Math.round((sel.arrowLabelPosition ?? 0.5) * 100)} onPointerDown={checkpoint} onChange={(event) => patchItem(sel.id, { arrowLabelPosition: +event.target.value / 100 })} />
+                                <label>Fundo do rótulo da seta</label>
+                                <input aria-label="Fundo do rótulo da seta" type="color" value={/^#[\da-f]{6}$/i.test(sel.arrowLabelFill || "") ? sel.arrowLabelFill! : "#253746"} onFocus={checkpoint} onChange={(event) => patchItem(sel.id, { arrowLabelFill: event.target.value })} />
+                              </>}
+                              </>)}
+                            </div>
                         {sel.type === "agent" && selected.length === 1 && (
                           <>
                             <label htmlFor="agent-icon">Símbolo do cartão</label>
@@ -4008,7 +4362,7 @@ function App({ initial }: { initial: Library }) {
                             </p>
                           </>
                         )}
-                        {!["arrow", "pen", "icon", "image", "video", "audio", "file", "link"].includes(sel.type) && (
+                        {!["pen", "icon", "image", "video", "audio", "file", "link"].includes(sel.type) && (
                           <>
                             <label>Preenchimento <span>independente da borda</span></label>
                             <div className="fill-controls">
@@ -4079,11 +4433,29 @@ function App({ initial }: { initial: Library }) {
                       preview={previewMotion}
                       onPreview={() => setPreviewMotion((v) => !v)}
                     />
+                    {["video", "audio", "file", "link"].includes(sel.type) && (
+                      <section className="media-card-controls" aria-label="Controles do cartão de mídia">
+                        <div className="panel-subheading">Cartão de mídia</div>
+                        <label className="heading-field">
+                          <span className="heading-field-label">Título do cartão <em>{sel.text.length}</em></span>
+                          <textarea
+                            aria-label="Título do cartão de mídia"
+                            rows={2}
+                            value={sel.text}
+                            onFocus={checkpoint}
+                            onChange={(e) => patch({ text: e.target.value })}
+                          />
+                          <small>Rótulo exibido no cartão, na apresentação e nos relatórios.</small>
+                        </label>
+                      </section>
+                    )}
                     {["video", "audio"].includes(sel.type) && (
-                      <>
+                      <section className="media-card-controls" aria-label="Reprodução da mídia">
+                        <div className="panel-subheading">Reprodução</div>
                         <label className="check-setting">
                           <input
                             type="checkbox"
+                            aria-label="Repetir mídia"
                             checked={!!sel.mediaLoop}
                             onChange={(e) =>
                               patch({ mediaLoop: e.target.checked })
@@ -4094,6 +4466,7 @@ function App({ initial }: { initial: Library }) {
                         <label className="check-setting">
                           <input
                             type="checkbox"
+                            aria-label="Reproduzir ao revelar"
                             checked={!!sel.mediaAutoplay}
                             onChange={(e) =>
                               patch({ mediaAutoplay: e.target.checked })
@@ -4104,6 +4477,7 @@ function App({ initial }: { initial: Library }) {
                         <label className="check-setting">
                           <input
                             type="checkbox"
+                            aria-label="Sem som"
                             checked={sel.mediaMuted !== false}
                             onChange={(e) =>
                               patch({ mediaMuted: e.target.checked })
@@ -4111,10 +4485,11 @@ function App({ initial }: { initial: Library }) {
                           />
                           Sem som
                         </label>
-                      </>
+                      </section>
                     )}
                     {["image", "video"].includes(sel.type) && (
-                      <>
+                      <section className="media-card-controls" aria-label="Enquadramento da mídia">
+                        <div className="panel-subheading">Enquadramento</div>
                         <label>Ajuste da mídia</label>
                         <select
                           aria-label="Ajuste da mídia"
@@ -4128,7 +4503,7 @@ function App({ initial }: { initial: Library }) {
                           <option value="contain">Mostrar inteira</option>
                           <option value="cover">Preencher e recortar</option>
                         </select>
-                      </>
+                      </section>
                     )}
                     {["video", "audio", "file", "link"].includes(sel.type) && (
                       <button
@@ -4173,34 +4548,27 @@ function App({ initial }: { initial: Library }) {
                       </button>
                     </div>
                   </>
-                ) : (
-                  <p className="empty-style">
-                    Selecione um elemento no canvas para ajustar texto,
-                    preenchimento e animação.
-                  </p>
-                )}
-                <hr />
-                <TransitionControls
-                  scene={scene}
-                  onChange={(value) => change((s) => ({ ...s, ...value }))}
-                />
-                <label>
-                  Duração da seção <span>{scene.duration}s</span>
-                </label>
-                <input
-                  aria-label="Duração da seção"
-                  type="range"
-                  min="2"
-                  max="30"
-                  value={scene.duration}
-                  onPointerDown={checkpoint}
-                  onChange={(e) =>
-                    updateScene((s) => ({ ...s, duration: +e.target.value }))
-                  }
-                />
-                <p className="field-help">
-                  Tempo total de reprodução automática desta seção.
-                </p>
+                ) : null}
+                {selected.length > 0 && <details className="arrange-tools" aria-label="Alinhar, distribuir e agrupar">
+                  <summary>Organizar seleção</summary>
+                  <p className="field-help">Alinhe ou agrupe dois ou mais elementos; para distribuir, selecione pelo menos três.</p>
+                  <div className="arrange-grid">
+                    {([
+                      ["left", "Esquerda"], ["center-x", "Centro horizontal"], ["right", "Direita"],
+                      ["top", "Topo"], ["center-y", "Centro vertical"], ["bottom", "Base"],
+                    ] as Array<[Alignment, string]>).map(([operation, label]) => (
+                      <button key={operation} aria-label={`Alinhar ${label.toLowerCase()}`} title={`Alinhar ${label.toLowerCase()}`} disabled={editableSelected.length < 2} onClick={() => arrange(operation)}>{label}</button>
+                    ))}
+                  </div>
+                  <div className="arrange-grid distribute-grid">
+                    <button disabled={editableSelected.length < 3} onClick={() => arrange("horizontal")}>Distribuir ↔</button>
+                    <button disabled={editableSelected.length < 3} onClick={() => arrange("vertical")}>Distribuir ↕</button>
+                  </div>
+                  <div className="template-actions">
+                    <button disabled={editableSelected.length < 2} onClick={() => toggleGroup(false)}>Agrupar · Ctrl+G</button>
+                    <button disabled={!selected.some((id) => scene.items.find((item) => item.id === id)?.groupId)} onClick={() => toggleGroup(true)}>Desagrupar · Ctrl+Shift+G</button>
+                  </div>
+                </details>}
               </div>
             )}
           </aside>
@@ -4220,7 +4588,16 @@ function App({ initial }: { initial: Library }) {
           key={pdfPreview.assetId}
           assetId={pdfPreview.assetId}
           name={pdfPreview.name}
+          initialPage={pdfPreview.page}
           onClose={() => setPdfPreview(null)}
+        />
+      )}
+      {searchOpen && (
+        <SearchReplace
+          board={board}
+          onNavigate={revealSearchMatch}
+          onBoardChange={(next) => { checkpoint(); setBoard(next); }}
+          onClose={() => setSearchOpen(false)}
         />
       )}
       {linkPreview && (
@@ -4293,7 +4670,8 @@ function App({ initial }: { initial: Library }) {
           </div>
         </ModalDialog>
       )}
-      {present && <PresenterPanel scenes={board.scenes} index={index} step={step} maxStep={maxStep} playing={playing} audience={audienceOpen} fullscreen={presenterFullscreen} laser={laserEnabled} onSelect={go} onPrevious={previousPresentation} onNext={advance} onPlay={() => setPlaying(value => !value)} onStop={stopPresentation} onOpenAudience={() => void openAudience()} onCloseAudience={() => { void window.orquestraPresenter?.closeAudience().then(() => setAudienceOpen(false)).catch(() => notify("Não foi possível fechar a tela do público.")); }} onFullscreen={() => void togglePresenterFullscreen()} onLaser={() => { clearLaser(); setLaserEnabled(value => !value); }} minimized={presenterMinimized} onMinimize={() => setPresenterMinimized(true)} onRestore={() => setPresenterMinimized(false)} notes={(scene as Scene & {presenterNotes?:string}).presenterNotes} />}
+      {present && operatorOpen && <button className="operator-return" onClick={() => void openOperator()} aria-label="Mostrar console separado">Console separado <span>Mostrar</span></button>}
+      {present && !operatorOpen && <PresenterPanel timer={operatorTimer} onTimerChange={setOperatorTimer} onDetach={window.orquestraOperator ? () => void openOperator() : undefined} scenes={board.scenes} index={index} step={step} maxStep={maxStep} playing={playing} audience={audienceOpen} fullscreen={presenterFullscreen} laser={laserEnabled} onSelect={go} onPrevious={previousPresentation} onNext={advance} onPlay={() => setPlaying(value => !value)} onStop={stopPresentation} onOpenAudience={() => void openAudience()} onCloseAudience={() => { void window.orquestraPresenter?.closeAudience().then(() => setAudienceOpen(false)).catch(() => notify("Não foi possível fechar a tela do público.")); }} onFullscreen={() => void togglePresenterFullscreen()} onLaser={() => { clearLaser(); setLaserEnabled(value => !value); }} minimized={presenterMinimized} onMinimize={() => setPresenterMinimized(true)} onRestore={() => setPresenterMinimized(false)} notes={(scene as Scene & {presenterNotes?:string}).presenterNotes} />}
       {mediaBusy && (
         <div className="media-import-status" role="status">
           <Upload size={16} />
@@ -4317,7 +4695,9 @@ function App({ initial }: { initial: Library }) {
   );
 }
 const root = document.getElementById("root")!;
-if (window.orquestraPresenter?.isAudience) {
+if (window.orquestraOperator?.isOperator) {
+  createRoot(root).render(<React.StrictMode><OperatorView /></React.StrictMode>);
+} else if (window.orquestraPresenter?.isAudience) {
   createRoot(root).render(<React.StrictMode><AudienceView /></React.StrictMode>);
 } else readLibrary()
   .then((initial) =>

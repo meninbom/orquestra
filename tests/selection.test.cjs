@@ -99,6 +99,21 @@ test("freehand tests ink, reverse arrows use normalized bounds and empty frame i
     "frame",
   ]);
 });
+test("empty arrow labels add no selectable area or selection bounds", () => {
+  for (const [id, text] of [["empty-label", ""], ["whitespace-label", "  "]]) {
+    const arrow = item(id, "arrow", 100, 100, 300, 0, { text, size: 88, arrowLabelPosition: 0.5 });
+    const { points } = arrowGeometry(arrow, [arrow]);
+    const expected = {
+      x: Math.min(...points.map(({ x }) => x)) - 3,
+      y: Math.min(...points.map(({ y }) => y)) - 3,
+      w: Math.max(...points.map(({ x }) => x)) - Math.min(...points.map(({ x }) => x)) + 6,
+      h: Math.max(...points.map(({ y }) => y)) - Math.min(...points.map(({ y }) => y)) + 6,
+    };
+    assert.deepEqual(itemBounds(arrow, [arrow]), expected);
+    assert.deepEqual(selectionBounds([arrow], [arrow.id]), expected);
+    assert.deepEqual(itemsInArea([arrow], { x: 240, y: 40, w: 20, h: 20 }), [], "the former blank-label location is not selectable");
+  }
+});
 test("connected arrows are hit at rendered endpoints, not their stored zero coordinates", () => {
   const a = item("a", "rect", 100, 100, 100, 60),
     b = item("b", "rect", 400, 100, 100, 60),

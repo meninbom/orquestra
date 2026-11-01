@@ -76,3 +76,12 @@ test("F03: an explicitly chosen palette text color is preserved on a light surfa
   const chosen = item("chosen-palette", "text", { textColor: "#e2e9e2", fill: "transparent" });
   assert.equal(textFill(render([chosen], true), "chosen-palette"), "#e2e9e2");
 });
+
+
+test("arrow labels preserve chosen font, color, and formatting in exported scenes", () => {
+  const arrow = item("arrow-label", "arrow", { text: "Olá Brasil", textColor: "#ff3366", fontFamily: "Georgia", bold: true, italic: true });
+  for (const light of [false, true]) {
+    const markup = render([arrow], light);
+    assert.match(markup, /fill="#ff3366"[^>]*font-family="Georgia, serif"[^>]*font-weight="700"[^>]*font-style="italic"/);
+  }
+});

@@ -1,5 +1,10 @@
+import { penWidthOf } from "./penGeometry";
 import { type ArrowPort, type Item, uid, validBoard } from "./model";
 import { editableSelection, expandGroupIds } from "./groups";
+import { measureHeadingWidth } from "./headingMetrics";
+import { arrowFontStack, arrowLabelLayout, fontStackForFamily, textBlockHeight, textPaddingY, wrapItemText } from "./textLayout";
+import { hasItemRichText } from "./richText";
+import { arrowLabelFor, frameTitleHeightOf } from "./itemTextMetrics";
 export const SELECTION_MIME = "application/x-orquestra-selection";
 export function readSelection(value: string): Item[] | null {
   try {
@@ -83,14 +88,38 @@ export function portAnchor(item: Item, port: ArrowPort): Point {
 
 export function frameTitleHeight(item: Item): number {
   if (item.type !== "frame" || !item.text) return 0;
-  const charactersPerLine = Math.max(1, Math.floor((item.w - 32) / Math.max(6, item.size * 0.55)));
-  const lines = item.text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(line.length / charactersPerLine)), 0);
-  return Math.min(600, lines * item.size * (item.lineHeight || 1.1) + 10);
+  // Rich titles are laid out run by run; using the legacy single-size height
+  // would crop the selection box and exported frame.
+  if (hasItemRichText(item)) return frameTitleHeightOf(item, measureHeadingWidth);
+  const lines = wrapItemText(item, measureHeadingWidth, fontStackForFamily(item.fontFamily, "DM Sans"));
+  return Math.min(600, textBlockHeight(item, lines) + 2 * textPaddingY(item));
 }
 
 export function frameTitleBounds(item: Item): Bounds {
   const h = frameTitleHeight(item);
   return { x: item.x + 8, y: item.y - h, w: Math.max(0, item.w - 16), h };
+}
+
+/** Return the point at a normalized distance along a polyline, not by vertex index. */
+export function pointAlongPath(points: Point[], position = 0.5): Point | undefined {
+  if (!points.length) return undefined;
+  if (points.length === 1) return points[0];
+  const lengths = points.slice(1).map((point, index) => Math.hypot(point.x - points[index].x, point.y - points[index].y));
+  const total = lengths.reduce((sum, length) => sum + length, 0);
+  if (!total) return points[0];
+  let remaining = total * Math.max(0, Math.min(1, position));
+  for (let index = 0; index < lengths.length; index++) {
+    const length = lengths[index];
+    if (remaining <= length || index === lengths.length - 1) {
+      const ratio = length ? Math.max(0, Math.min(1, remaining / length)) : 0;
+      return {
+        x: points[index].x + (points[index + 1].x - points[index].x) * ratio,
+        y: points[index].y + (points[index + 1].y - points[index].y) * ratio,
+      };
+    }
+    remaining -= length;
+  }
+  return points.at(-1);
 }
 
 // Canvas rendering, hit testing and exports share this curve and its endpoints.
@@ -179,14 +208,36 @@ export function reconnectArrowEndpoint(
   return { ...arrow, from, to, fromPort, toPort, x: storedStart.x, y: storedStart.y, w: storedEnd.x - storedStart.x, h: storedEnd.y - storedStart.y };
 }
 export function itemBounds(item: Item, items: Item[]): Bounds {
-  if (item.type === "arrow")
-    return expand(pointsBounds(arrowGeometry(item, items).points), 3);
+  if (item.type === "arrow") {
+    const geometry = arrowGeometry(item, items);
+    const pathBounds = expand(pointsBounds(geometry.points), 3);
+    if (!item.text.trim()) return pathBounds;
+    const richLabel = hasItemRichText(item);
+    const label = richLabel ? arrowLabelFor(item, measureHeadingWidth) : arrowLabelLayout(item, measureHeadingWidth, arrowFontStack(item));
+    const point = pointAlongPath(geometry.points, item.arrowLabelPosition ?? 0.5);
+    if (!point || !label.width || !label.height) return pathBounds;
+    // Rich labels use the first line's own ascent and the per-line gaps; legacy labels use item.size.
+    const ascent = richLabel
+      ? ((label as { lines: Array<{ size?: number }> }).lines[0]?.size ?? item.size)
+      : item.size;
+    const gap = richLabel
+      ? (label as { lines: Array<{ size: number }> }).lines.reduce((sum, line, index) => sum + (index === 0 ? 0 : line.size * (item.lineHeight ?? 1.1)), 0)
+      : (label.lines.length - 1) * label.lineStep;
+    const top = point.y - 2 - gap - ascent - label.topInset;
+    const labelBounds = { x: point.x - label.width / 2, y: top, w: label.width, h: label.height };
+    return {
+      x: Math.min(pathBounds.x, labelBounds.x),
+      y: Math.min(pathBounds.y, labelBounds.y),
+      w: Math.max(pathBounds.x + pathBounds.w, labelBounds.x + labelBounds.w) - Math.min(pathBounds.x, labelBounds.x),
+      h: Math.max(pathBounds.y + pathBounds.h, labelBounds.y + labelBounds.h) - Math.min(pathBounds.y, labelBounds.y),
+    };
+  }
   if (item.type === "pen" && item.points?.length)
     return expand(
       pointsBounds(
         item.points.map(([x, y]) => ({ x: item.x + x, y: item.y + y })),
       ),
-      1.5,
+      Math.max(1.5, penWidthOf(item) / 2),
     );
   const bounds = rectangle(
     { x: item.x, y: item.y },
@@ -244,7 +295,7 @@ export function itemsInArea(items: Item[], area: Bounds): string[] {
                 ]
               : undefined;
       if (!points?.length) return true;
-      const tolerance = expand(area, 3);
+      const tolerance = expand(area, item.type === "pen" ? Math.max(3, penWidthOf(item) / 2) : 3);
       if (points.length === 1)
         return intersects(
           { x: points[0].x, y: points[0].y, w: 0, h: 0 },

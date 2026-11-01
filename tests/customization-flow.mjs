@@ -127,6 +127,40 @@ export async function testCustomization({ cdp, run, waitFor }) {
   assert.ok(await run(`!!document.querySelector('[data-item="${agentId}"] .lucide-brain')`));
   assert.deepEqual(await agentColors(), { border: "#1a6f33", text: "#224488" }, "independent colors persist");
   assert.ok(await run('document.querySelector(".app").classList.contains("light") && document.querySelector(".app").classList.contains("accent-blue") && !!document.querySelector(".canvas-grid")'));
+
+  // Border changes keep the color a viewer actually sees, including the
+  // theme-adapted default, on both themes and for explicit choices.
+  const glyphColor = (id) => run(`document.querySelector('[data-item="${id}"] > text')?.getAttribute('fill')`);
+  const lightRect = await draw("Retângulo", [400, 420], [520, 480]);
+  await click(".aside-tabs button:nth-child(2)");
+  await edit('[aria-label="Texto do elemento no painel Estilo"]', "Contraste claro");
+  await edit('[aria-label="Cor de preenchimento personalizada"]', "#e2e9e2");
+  await edit('[aria-label="Cor personalizada da borda"]', "#e2e9e2");
+  const lightAdapted = await glyphColor(lightRect);
+  assert.ok(lightAdapted && lightAdapted !== "#e2e9e2", "default text adapts against a light fill in the light theme: " + lightAdapted);
+  await edit('[aria-label="Cor personalizada da borda"]', "#ee9b91");
+  assert.equal(await glyphColor(lightRect), lightAdapted, "border change preserves the adapted visible color in the light theme");
+  await edit('[aria-label="Cor personalizada do texto"]', "#c3a4e7");
+  await edit('[aria-label="Cor personalizada da borda"]', "#85b9e2");
+  assert.equal(await glyphColor(lightRect), "#c3a4e7", "explicit text color survives border changes in the light theme");
+
+  await click('[aria-label="Configurações do board"]');
+  await run(`[...document.querySelectorAll('.board-settings-panel .appearance-options button')].find(button=>button.textContent==='Escuro').click()`);
+  await frame();
+  assert.ok(await run('!document.querySelector(".app").classList.contains("light")'), "dark theme is active for the adaptation check");
+  const darkRect = await draw("Retângulo", [400, 540], [520, 600]);
+  await click(".aside-tabs button:nth-child(2)");
+  await edit('[aria-label="Texto do elemento no painel Estilo"]', "Contraste escuro");
+  await edit('[aria-label="Cor de preenchimento personalizada"]', "#e2e9e2");
+  await edit('[aria-label="Cor personalizada da borda"]', "#e2e9e2");
+  const darkAdapted = await glyphColor(darkRect);
+  assert.ok(darkAdapted && darkAdapted !== "#e2e9e2", "default text adapts against a light fill in the dark theme: " + darkAdapted);
+  await edit('[aria-label="Cor personalizada da borda"]', "#ee9b91");
+  assert.equal(await glyphColor(darkRect), darkAdapted, "border change preserves the adapted visible color in the dark theme");
+  await edit('[aria-label="Cor personalizada do texto"]', "#ff3366");
+  await edit('[aria-label="Cor personalizada da borda"]', "#85b9e2");
+  assert.equal(await glyphColor(darkRect), "#ff3366", "explicit text color survives border changes in the dark theme");
+
   await click('[aria-label="Abrir configurações do board"]');
   assert.ok(await run('!!document.querySelector(".board-settings-panel")'), "header opens board settings");
   await delay(700);

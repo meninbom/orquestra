@@ -47,5 +47,5 @@ test("pen strokes and icons keep their data-item wrapper around the drawing prim
     scene: { id: "anim", name: "Animação", description: "", duration: 6, items },
     index: 0, light: false, images: {}, embeddedFonts: "",
   }));
-  assert.match(markup, /<g data-item="pen"><polyline/);
+  assert.match(markup, /<g data-item="pen"><path/);
 });

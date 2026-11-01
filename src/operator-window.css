@@ -1,0 +1,11 @@
+body.operator-body, body.operator-body #root { margin: 0; width: 100%; height: 100%; background: transparent !important; overflow: hidden; }
+.operator-window { width: 100%; height: 100%; overflow-y: auto; color: #f5f5f5; }
+.operator-window .presenter-panel { position: relative; inset: auto; width: 100%; max-height: none; box-sizing: border-box; }
+.operator-window .operator-drag, .operator-loading { -webkit-app-region: drag; }
+.operator-drag button, .operator-window button, .operator-window select { -webkit-app-region: no-drag; }
+.operator-loading { box-sizing: border-box; height: 64px; border-radius: 22px; background: #171717; color: white; padding: 20px; }
+.operator-window .operator-attach { margin: 0; }
+
+html:has(body.operator-body) { background: transparent !important; }
+.operator-window .presenter-panel { transform: none; }
+.operator-window { display:block; }

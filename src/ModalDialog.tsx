@@ -32,7 +32,10 @@ export function ModalDialog({ className = "", label, onClose, children, closeOnB
       closeRef.current();
     };
     const click = (event: MouseEvent) => {
-      if (closeOnBackdrop && event.target === dialog) closeRef.current();
+      if (closeOnBackdrop && event.target === dialog) {
+        const rect = dialog.getBoundingClientRect();
+        if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeRef.current();
+      }
     };
     dialog.addEventListener("cancel", cancel);
     dialog.addEventListener("click", click);

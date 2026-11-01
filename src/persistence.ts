@@ -7,6 +7,14 @@ import {
 import { type ProjectVersion } from "./versions";
 
 type DesktopApi = {
+  aiStatus(): Promise<{account: {email?: string; type?: string} | null}>;
+  aiModels(): Promise<{data: {id: string; displayName?: string; isDefault?: boolean}[]}>;
+  aiLogin(): Promise<boolean>;
+  aiCancelLogin(): Promise<void>;
+  aiLogout(): Promise<void>;
+  aiGenerate(prompt: string, model: string, pages: number[]): Promise<unknown>;
+  aiCancel(): Promise<void>;
+  removeNewAsset(id: string): Promise<void>;
   loadLibrary(): Promise<Library | null>;
   saveLibrary(value: Library): Promise<void>;
   saveFile(name: string, data: Uint8Array): Promise<boolean>;

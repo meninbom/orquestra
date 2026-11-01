@@ -29,6 +29,13 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   };
   const screen = (x, y) => run(`(()=>{const p=new DOMPoint(${x},${y}).matrixTransform(document.querySelector('[data-world]').getScreenCTM());return{x:p.x,y:p.y}})()`);
   const mouse = async (type, point, modifiers = 0, clickCount = 1) => { await cdp("Input.dispatchMouseEvent", { type, ...point, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount, modifiers }); await frame(); };
+  const doubleClick = async (point) => {
+    for (const count of [1, 2]) {
+      await mouse("mousePressed", point, 0, count);
+      await mouse("mouseReleased", point, 0, count);
+      if (count === 1) await delay(90);
+    }
+  };
   const centerOf = (selector) => run(`(()=>{const r=document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect();if(!r)throw Error('Missing '+${JSON.stringify(selector)});return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   const clickItem = async (id) => {
     const point = await run(`(()=>{const r=document.querySelector('[data-item="${id}"]').getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);
@@ -289,6 +296,7 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   await click(".aside-tabs button:nth-child(2)");
   const rectBounds = () => run('[...document.querySelectorAll(".scene-content > [data-item]")].map(g=>{const r=g.querySelector("rect[stroke]");return{x:+r.getAttribute("x"),w:+r.getAttribute("width")}}).sort((a,b)=>a.x-b.x)');
   const beforeDistribution = await rectBounds();
+  await click('.arrange-tools summary');
   await click('.distribute-grid button:first-child');
   const distributed = await rectBounds();
   assert.equal(distributed[0].x, beforeDistribution[0].x);
@@ -367,11 +375,25 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   await click('[aria-label="Alinhar texto à centro"]');
   await edit('[aria-label="Espaçamento entre linhas"]', "1.6");
   assert.ok(await run(`(()=>{const text=document.querySelector('[data-item="${textId}"] > text');return text.getAttribute("font-weight")==="700"&&text.getAttribute("font-style")==="italic"&&text.getAttribute("text-anchor")==="middle"})()`));
+  await edit('[aria-label="Alinhamento vertical do texto"]', "bottom");
+  await edit('[aria-label="Margem interna horizontal"]', 24);
+  await edit('[aria-label="Margem interna vertical"]', 10);
+  await edit('[aria-label="Modo de ajuste automático"]', "fixed");
+  await edit('[aria-label="Margem interna vertical"]', 100);
+  await waitFor(() => run('!!document.querySelector(".text-overflow-warning")'), "fixed-size overflow feedback");
+  await edit('[aria-label="Modo de ajuste automático"]', "shrink");
+  await edit('[aria-label="Margem interna vertical"]', 10);
+  await edit('[aria-label="Modo de ajuste automático"]', "grow");
+  await edit('[aria-label="Tamanho do texto"]', 26);
   await click('[aria-label="Ajustar altura automaticamente"]');
   await click('[aria-label="Ajustar altura automaticamente"]');
   await delay(550);
   const textGeometry = (await library()).projects.find((project) => project.id === qaProjectId).board.scenes[0].items.find((item) => item.id === textId);
   assert.equal(textGeometry.autoHeight, true);
+  assert.equal(textGeometry.verticalAlign, "bottom");
+  assert.equal(textGeometry.textPaddingX, 24);
+  assert.equal(textGeometry.textPaddingY, 10);
+  assert.equal(textGeometry.autoFit, "grow");
   assert.ok(textGeometry.h > 60, `auto-height should grow long text (${textGeometry.h})`);
 
   // Save a named appearance and prove applying it does not overwrite content or geometry.
@@ -429,6 +451,27 @@ export async function testFeatures({ cdp, run, waitFor, profile }) {
   await waitFor(() => run('document.querySelectorAll("[data-item] .arrow-line").length===1'), "connected arrow appears");
   const arrowId = await run('document.querySelector("[data-item]:has(.arrow-line)")?.dataset.item');
   await click(".aside-tabs button:nth-child(2)");
+  await edit('[aria-label="Texto do elemento no painel Estilo"]', "Rótulo medido\nsegunda linha");
+  await edit('[aria-label="Posição do rótulo na seta"]', 75);
+  await edit('[aria-label="Fundo do rótulo da seta"]', "#334455");
+  await waitFor(async () => {
+    const arrow = (await activeScene()).scene.items.find((item) => item.id === arrowId);
+    return arrow?.text === "Rótulo medido\nsegunda linha" && arrow.arrowLabelPosition === 0.75 && arrow.arrowLabelFill === "#334455";
+  }, "multiline arrow label settings persist");
+  assert.equal(await run(`document.querySelector('[data-item="${arrowId}"] [data-arrow-label] tspan:nth-child(2)')?.textContent`), "segunda linha");
+  // Double-clicking the letters on the label edits the existing connector
+  // instead of creating a new, empty text item at the pointer position.
+  const itemsBeforeLabelEdit = await run('document.querySelectorAll(".scene-content > [data-item]").length');
+  const labelCenter = await run(`(()=>{const r=document.querySelector('[data-item="${arrowId}"] [data-arrow-label] rect').getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+  await doubleClick(labelCenter);
+  await waitFor(() => run('!!document.querySelector(".canvas-edit")'), "arrow label editor");
+  assert.equal(await run('document.querySelector(".canvas-edit").value'), "Rótulo medido\nsegunda linha", "the label editor opens with the connector text");
+  assert.equal(await run('document.querySelectorAll(".scene-content > [data-item]").length'), itemsBeforeLabelEdit, "editing the label never duplicates the item");
+  assert.equal(await run('document.activeElement?.classList.contains("canvas-edit")'), true, "the label editor owns focus");
+  await key("Escape", "Escape", 27);
+  await waitFor(() => run('!document.querySelector(".canvas-edit")'), "arrow label editor closed");
+  assert.equal(await run(`document.querySelectorAll(".scene-content > [data-item]").length`), itemsBeforeLabelEdit);
+  assert.ok(await run(`document.querySelector('[data-item="${arrowId}"]')?.textContent.includes("Rótulo medido")`), "the label keeps its text after Escape");
   await edit('[aria-label="Cor personalizada da borda"]', "#ff0044");
   await waitFor(async () => (await activeScene()).scene.items.find((item) => item.id === arrowId)?.color === "#ff0044", "custom connector color persists");
   await click('[aria-label="Camadas"]');

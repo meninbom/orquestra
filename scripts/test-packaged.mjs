@@ -152,7 +152,21 @@ try {
     };
     return mainWs;
   }
-  if (process.env.ORQUESTRA_TEST_PRESENTER === "1") {
+  if (process.env.ORQUESTRA_TEST_AI === "1") {
+    await connectMainInspector();
+    const { testAiFlow } = await import("../tests/ai-flow.mjs");
+    const evidence = await testAiFlow({ cdp, run, mainRun, waitFor, profile, cdpEvents });
+    await mkdir(".qa", { recursive: true });
+    await writeFile(".qa/ai-flow.json", JSON.stringify({ passed: true, executable, evidence }, null, 2));
+    console.log(JSON.stringify({ passed: true, executable, ai: evidence }, null, 2));
+  } else if (process.env.ORQUESTRA_TEST_OPERATOR === "1") {
+    await connectMainInspector();
+    const { testOperatorConsole } = await import("../tests/operator-flow.mjs");
+    const evidence = await testOperatorConsole({ cdp, run, mainRun, waitFor, profile, cdpEvents });
+    await mkdir(".qa", { recursive: true });
+    await writeFile(".qa/operator-flow.json", JSON.stringify({ passed: true, executable, evidence }, null, 2));
+    console.log(JSON.stringify({ passed: true, executable, operator: evidence }, null, 2));
+  } else if (process.env.ORQUESTRA_TEST_PRESENTER === "1") {
     await connectMainInspector();
     const { testPresenterBridge } = await import("../tests/presenter-bridge-flow.mjs");
     const evidence = await testPresenterBridge({ cdp, run, mainRun, waitFor, profile, cdpEvents });
@@ -290,7 +304,7 @@ try {
   await run('document.querySelector("audio").pause()');
   const edit = async (selector, value) => {
     await run(
-      `(()=>{const input=document.querySelector(${JSON.stringify(selector)});const proto=input instanceof HTMLSelectElement?HTMLSelectElement.prototype:input instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(input,${JSON.stringify(String(value))});input.dispatchEvent(new Event(input instanceof HTMLSelectElement?'change':'input',{bubbles:true}));})()`,
+      `(()=>{const input=document.querySelector(${JSON.stringify(selector)});if(!input)throw Error("Campo ausente: "+${JSON.stringify(selector)});const proto=input instanceof HTMLSelectElement?HTMLSelectElement.prototype:input instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(input,${JSON.stringify(String(value))});input.dispatchEvent(new Event(input instanceof HTMLSelectElement?'change':'input',{bubbles:true}));})()`,
     );
     await delay(50);
   };
@@ -400,9 +414,12 @@ try {
   await run('document.querySelector(".preview-motion").click()');
   assert.ok(await run('!!document.querySelector("[data-item].bounce")'));
   await run('document.querySelector(".preview-motion").click()');
-  await edit('[aria-label="Transição da seção"]', "slide");
   await run('document.querySelector(".aside-tabs button").click()');
   await delay(60);
+  await run('document.querySelector(".section-timing summary").click()');
+  assert.ok(await run(`document.querySelector('[aria-label="Transição da seção"]').getBoundingClientRect().height>0`));
+  await edit('[aria-label="Transição da seção"]', "slide");
+  await run('document.querySelector(".section-timing summary").click()');
   await edit(
     '[aria-label="Título da seção"]',
     "Ícones, imagens, vídeo e áudio.",
@@ -549,6 +566,7 @@ try {
   await run(`document.querySelector('[title="Fechar inserção"]').click()`);
   await run(`document.querySelector('.projects-trigger').click()`);
   await delay(100);
+  await run('document.querySelector(".project-options summary").click()');
   await edit('[aria-label="Transição entre projetos"]', "flip");
   await run(
     `document.querySelector('.project-row:first-child .project-open').click()`,

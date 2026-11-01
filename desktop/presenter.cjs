@@ -4,7 +4,7 @@ const { validLibrary } = require("./library.cjs");
 
 const commands = new Set(["next", "previous", "stop"]);
 const sceneKeys = ["id", "name", "description", "subtitle", "headingLayout", "items", "duration", "transition", "transitionMs"];
-const itemKeys = ["id", "type", "x", "y", "w", "h", "text", "color", "textColor", "fill", "fillOpacity", "size", "fontFamily", "step", "animation", "animationMs", "arrowMotion", "arrowSeconds", "arrowStyle", "icon", "assetId", "assetName", "assetMime", "url", "pdfPage", "mediaFit", "mediaLoop", "mediaAutoplay", "mediaMuted", "points", "from", "to", "fromPort", "toPort", "name", "groupId", "locked", "hidden", "bold", "italic", "textAlign", "lineHeight", "autoHeight"];
+const itemKeys = ["id", "type", "x", "y", "w", "h", "text", "color", "textColor", "fill", "fillOpacity", "size", "fontFamily", "step", "animation", "animationMs", "arrowMotion", "arrowSeconds", "arrowStyle", "arrowLabelPosition", "arrowLabelFill", "icon", "assetId", "assetName", "assetMime", "url", "pdfPage", "mediaFit", "mediaLoop", "mediaAutoplay", "mediaMuted", "points", "from", "to", "fromPort", "toPort", "name", "groupId", "locked", "hidden", "bold", "italic", "textAlign", "verticalAlign", "textPaddingX", "textPaddingY", "lineHeight", "autoFit", "autoHeight"];
 function validState(value) {
   try {
     if (!value || typeof value !== "object" || !value.scene || typeof value.scene !== "object" || Array.isArray(value.scene)) return false;
@@ -32,13 +32,18 @@ function validLaser(value) {
 
 function installPresenter({ mainWindow, assetPaths }) {
   let audience = null, latest = null, full = false, throttling = null;
+  const holders = new Set();
   const send = () => { if (audience && !audience.isDestroyed() && latest) audience.webContents.send("presenter:state", latest); };
-  const keepRendering = () => {
+  const keepRendering = (holder = "audience") => {
+    if (holders.has(holder)) return;
+    holders.add(holder);
     if (throttling !== null || mainWindow.isDestroyed()) return;
     throttling = mainWindow.webContents.getBackgroundThrottling();
     mainWindow.webContents.setBackgroundThrottling(false);
   };
-  const restoreRendering = () => {
+  const restoreRendering = (holder = "audience") => {
+    holders.delete(holder);
+    if (holders.size) return;
     if (throttling !== null && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(throttling);
     throttling = null;
   };
@@ -85,6 +90,6 @@ function installPresenter({ mainWindow, assetPaths }) {
   const close = () => audience?.close();
   mainWindow.once("closed", close);
   app.on("before-quit", close);
-  return { close, get audience() { return audience; }, get fullscreen() { return full; } };
+  return { close, rendering: { acquire: keepRendering, release: restoreRendering }, get audience() { return audience; }, get fullscreen() { return full; } };
 }
 module.exports = { installPresenter, validState, validLaser };

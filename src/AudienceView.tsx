@@ -44,7 +44,7 @@ export function AudienceView() {
   return <main className={`audience ${state.light ? "light" : "dark"}`} aria-label="Tela do público">
     <div className="audience-board">
       <div ref={sceneRef} className="audience-scene" key={scene.id}>
-        <div className="audience-artwork" style={{ animation: transition }}><StaticScene scene={scene} index={state.index} light={state.light} images={{}} embeddedFonts="" animated /></div>
+        <div className="audience-artwork" style={{ animation: transition }}><StaticScene scene={scene} index={state.index} light={state.light} images={{}} embeddedFonts="" animated onOpenLink={(url) => { void window.orquestraDesktop?.openLink(url).catch(() => {}); }} /></div>
         <svg className="audience-media-layer" style={{ animation: transition }} viewBox={`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`} preserveAspectRatio="xMidYMid meet" aria-label="Mídias da apresentação">
           {media.map((item) => { const mediaItem = pdfPages[item.id] ? { ...item, pdfPage: pdfPages[item.id] } : item; return <g key={item.id} data-audience-media={item.id}>
             <rect x={item.x} y={item.y} width={item.w} height={item.h} fill={state.light ? "#f4f7f3" : "#000"} />

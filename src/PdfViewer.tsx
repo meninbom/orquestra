@@ -8,12 +8,12 @@ import { createPdfDocumentTask } from "./pdfPreview";
 type PasswordUpdater = (password: string) => void;
 type FitMode = "width" | "page";
 
-export function PdfViewer({ assetId, name, onClose }: { assetId: string; name: string; onClose: () => void }) {
+export function PdfViewer({ assetId, name, initialPage = 1, onClose }: { assetId: string; name: string; initialPage?: number; onClose: () => void }) {
   const [document, setDocument] = useState<any>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(initialPage);
   const [zoom, setZoom] = useState(1);
   const [fit, setFit] = useState<FitMode>("width");
   const [password, setPassword] = useState("");
@@ -101,6 +101,33 @@ export function PdfViewer({ assetId, name, onClose }: { assetId: string; name: s
     setPage(next);
     scroller.current?.querySelector<HTMLElement>(`[data-pdf-page="${next}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+  useEffect(() => {
+    if (!document) return;
+    const next = Math.max(1, Math.min(document.numPages, initialPage));
+    const container = scroller.current;
+    if (!container) return;
+    let finished = false;
+    let frame = 0;
+    const position = () => {
+      if (finished) return;
+      const target = container.querySelector<HTMLElement>(`[data-pdf-page="${next}"]`);
+      if (!target) return;
+      target.scrollIntoView({ block: "start" });
+      setPage(next);
+      if (target.querySelector('canvas[data-rendered="true"]')) {
+        finished = true;
+        observer.disconnect();
+        resize.disconnect();
+      }
+    };
+    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(position); };
+    const observer = new MutationObserver(schedule);
+    const resize = new ResizeObserver(schedule);
+    observer.observe(container, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-rendered"] });
+    container.querySelectorAll<HTMLElement>('[data-pdf-page]').forEach((element) => resize.observe(element));
+    schedule();
+    return () => { finished = true; cancelAnimationFrame(frame); observer.disconnect(); resize.disconnect(); };
+  }, [document, initialPage]);
   const toggleFullscreen = async () => {
     if (fallbackFullscreen && !window.document.fullscreenElement) {
       setFallbackFullscreen(false);

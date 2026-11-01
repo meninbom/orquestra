@@ -1,7 +1,7 @@
 {
   "name": "agentboard",
   "private": true,
-  "version": "1.7.2",
+  "version": "1.10.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/prepare-pdf-assets.mjs && vite --host 0.0.0.0",

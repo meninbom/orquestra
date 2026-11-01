@@ -12,7 +12,7 @@
   overflow: visible;
 }
 .app-modal-dialog:not([open]) { display: none; }
-.app.desktop .app-modal-dialog { inset-block: 78px; max-height: min(780px, calc(100dvh - 156px)); }
+.app.desktop .app-modal-dialog { inset: 74px 0 12px; max-height: min(780px, calc(100dvh - 86px)); }
 .app-modal-dialog::backdrop { background: #0009; }
 .app-modal-dialog > * { max-height: min(94dvh, 100%); overflow: auto; }
 .app-modal-dialog:focus { outline: none; }
@@ -33,7 +33,7 @@
 .app.desktop .app-modal-dialog > .action-dialog,
 .app.desktop .app-modal-dialog > .project-confirm-content,
 .app.desktop .app-modal-dialog > .version-confirm {
-  max-height: min(780px, calc(100dvh - 156px));
+  max-height: min(780px, calc(100dvh - 86px));
 }
 .app-modal-dialog > .action-dialog { width: 100%; }
 .app-modal-dialog > .projects-modal,
@@ -45,17 +45,17 @@
 .app-modal-dialog > .project-confirm-content {
   width: 100%; max-width: 440px; max-height: 90dvh; overflow: auto;
   padding: 30px; color: var(--text); background: var(--surface);
-  border: 1px solid var(--line); border-radius: 13px;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
 }
-.project-confirm-content > svg { color: #ee9b91; }
+.project-confirm-content > svg { color: var(--danger); }
 .project-confirm-content h3 { font-size: 20px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
 .project-confirm-content p { font-size: 12px; line-height: 1.8; color: var(--muted); }
 .project-confirm-content > div { display: flex; justify-content: flex-end; gap: 10px; margin-top: 23px; }
-.project-confirm-content button { padding: 10px 15px; font-size: 11px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
-.project-confirm-content button.danger { background: #a4433b; color: white; border-color: transparent; }
+.project-confirm-content button { padding: 10px 15px; font-size: 11px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.project-confirm-content button.danger { background: var(--danger-strong); color: white; border-color: transparent; }
 .app-modal-dialog.version-confirm-backdrop { position: fixed; inset: 0; display: block; margin: auto; width: min(460px, calc(100vw - 32px)); padding: 0; background: transparent; }
-.app-modal-dialog.version-confirm-backdrop > .version-confirm { width: 100%; max-height: min(90dvh, calc(100dvh - 156px)); overflow: auto; }
-.app.desktop .app-modal-dialog.version-confirm-backdrop { inset-block: 78px; }
+.app-modal-dialog.version-confirm-backdrop > .version-confirm { width: 100%; max-height: min(90dvh, calc(100dvh - 86px)); overflow: auto; }
+.app.desktop .app-modal-dialog.version-confirm-backdrop { inset: 74px 0 12px; }
 .app.light .app-modal-dialog::backdrop { background: #0007; }
 @media (max-width: 700px) {
   .app-modal-dialog:has(> .projects-modal), .app-modal-dialog:has(> .version-modal), .app-modal-dialog:has(> .insert-modal) { width: calc(100vw - 20px); }
@@ -64,4 +64,4 @@
 .app-modal-dialog { font: inherit; }
 .app-modal-dialog:has(> .modal) { width: min(600px, calc(100vw - 32px)); }
 .app-modal-dialog > .modal { width: 100%; }
-.app.desktop .app-modal-dialog > .modal { max-height: min(780px, calc(100dvh - 156px)); }
+.app.desktop .app-modal-dialog > .modal { max-height: min(780px, calc(100dvh - 86px)); }
